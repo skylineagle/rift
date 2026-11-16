@@ -68,7 +68,7 @@ jobs:
           else
             tar czf "$GITHUB_WORKSPACE/$name.tar.gz" rift
           fi
-      - run: gh release upload "$GITHUB_REF_NAME" rift-*.{tar.gz,zip} --clobber
+      - run: gh release upload "$GITHUB_REF_NAME" rift-v* --clobber
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -105,15 +105,26 @@ jobs:
           cp "target/${{ matrix.target }}/release/rift$extension" "apps/desktop/src-tauri/binaries/rift-${{ matrix.target }}$extension"
       - run: bun install --frozen-lockfile
         working-directory: apps/desktop
-      - uses: tauri-apps/tauri-action@v0
+      - name: Enable macOS signing when secrets exist
+        if: runner.os == 'macOS'
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ github.token }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          [ -n "$APPLE_CERTIFICATE" ] || exit 0
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            echo "$name<<EOF" >> "$GITHUB_ENV"
+            printenv "$name" >> "$GITHUB_ENV"
+            echo "EOF" >> "$GITHUB_ENV"
+          done
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         with:
           projectPath: apps/desktop
           tauriScript: bun run tauri
