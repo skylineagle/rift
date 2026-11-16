@@ -41,7 +41,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libudev-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - run: bun install --frozen-lockfile
       - run: bun run build
-      - run: bun test
+      - run: bun run test
       - run: cargo clippy -p rift-desktop -- -D warnings
 
   docker:
