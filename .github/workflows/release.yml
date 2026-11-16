@@ -52,8 +52,12 @@ jobs:
         with:
           key: ${{ matrix.target }}
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
-      - run: cargo build --release --locked -p rift-cli --target ${{ matrix.target }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
+          pip3 install --break-system-packages ziglang cargo-zigbuild
+          cargo zigbuild --release --locked -p rift-cli --target ${{ matrix.target }}.2.17
+      - if: runner.os != 'Linux'
+        run: cargo build --release --locked -p rift-cli --target ${{ matrix.target }}
       - name: Package
         shell: bash
         run: |
@@ -157,22 +161,8 @@ jobs:
             -t "$IMAGE:$version" -t "$IMAGE:latest" \
             "$IMAGE:$version-amd64" "$IMAGE:$version-arm64"
 
-  crates:
-    needs: [cli, desktop, docker-manifest]
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
-      - run: cargo publish --locked -p rift-bridge-core
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - run: cargo publish --locked -p rift-cli
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
   publish:
-    needs: crates
+    needs: [cli, desktop, docker-manifest]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
