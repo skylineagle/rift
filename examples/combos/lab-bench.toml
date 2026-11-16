@@ -1,0 +1,10 @@
+# Debug a device: a sniffing loop between two UARTs plus a remote console.
+[[profile]]
+name = "mitm"
+a = { kind = "uart", port = "/dev/ttyUSB0", baud_rate = 115200 }
+b = { kind = "uart", port = "/dev/ttyUSB1", baud_rate = 115200 }
+
+[[profile]]
+name = "console"
+a = { kind = "tcp-server", bind = "127.0.0.1:2323", max_clients = 1 }
+b = { kind = "uart", port = "/dev/ttyUSB2", baud_rate = 115200 }

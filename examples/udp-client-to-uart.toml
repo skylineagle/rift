@@ -1,0 +1,5 @@
+# Push serial telemetry to a fixed UDP target from a fixed local port.
+[[profile]]
+name = "uart-telemetry"
+a = { kind = "udp-client", remote = "10.0.0.50:14550", bind = "0.0.0.0:14555" }
+b = { kind = "uart", port = "/dev/ttyAMA0", baud_rate = 921600 }

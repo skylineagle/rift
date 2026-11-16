@@ -1,0 +1,15 @@
+# Edge gateway: GPS, modem and an IMU each exposed on their own port. Run with --all.
+[[profile]]
+name = "gps"
+a = { kind = "tcp-server", bind = "0.0.0.0:9000" }
+b = { kind = "uart", port = "/dev/ttyUSB0", baud_rate = 9600 }
+
+[[profile]]
+name = "modem"
+a = { kind = "tcp-server", bind = "0.0.0.0:9001", max_clients = 1 }
+b = { kind = "uart", port = "/dev/ttyUSB1", baud_rate = 115200, flow_control = "hardware" }
+
+[[profile]]
+name = "imu"
+a = { kind = "udp-server", bind = "0.0.0.0:5000", reply_to = "all", peer_timeout_secs = 30 }
+b = { kind = "uart", port = "/dev/ttyACM0", baud_rate = 921600 }

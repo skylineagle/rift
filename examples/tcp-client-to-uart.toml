@@ -1,0 +1,5 @@
+# Dial out to a remote collector and stream a local UART to it, reconnecting on drop.
+[[profile]]
+name = "uart-uplink"
+a = { kind = "tcp-client", address = "collector.example.com:7000", reconnect_delay_ms = 500, connect_timeout_ms = 3000 }
+b = { kind = "uart", port = "/dev/ttyACM0", baud_rate = 57600, flow_control = "software" }

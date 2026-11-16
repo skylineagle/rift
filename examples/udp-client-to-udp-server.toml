@@ -1,0 +1,5 @@
+# UDP relay: peers on :5000 reach a remote host, answers fan back to all of them.
+[[profile]]
+name = "udp-relay"
+a = { kind = "udp-client", remote = "10.0.0.5:6000", bind = "0.0.0.0:7000" }
+b = { kind = "udp-server", bind = "0.0.0.0:5000", peer_timeout_secs = 60 }

@@ -1,0 +1,5 @@
+# Plain TCP port forward: local :8080 to a remote service.
+[[profile]]
+name = "port-forward"
+a = { kind = "tcp-server", bind = "127.0.0.1:8080" }
+b = { kind = "tcp-client", address = "10.0.0.20:80" }

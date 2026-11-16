@@ -1,0 +1,5 @@
+# Rendezvous: two parties both connect in, rift joins them.
+[[profile]]
+name = "rendezvous"
+a = { kind = "tcp-server", bind = "0.0.0.0:9100", max_clients = 1 }
+b = { kind = "tcp-server", bind = "0.0.0.0:9101", max_clients = 1 }

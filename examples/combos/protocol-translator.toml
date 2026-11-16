@@ -1,0 +1,15 @@
+# Same remote service reachable over TCP, UDP and a serial cable at once.
+[[profile]]
+name = "via-tcp"
+a = { kind = "tcp-server", bind = "0.0.0.0:9000" }
+b = { kind = "tcp-client", address = "10.0.0.20:4000" }
+
+[[profile]]
+name = "via-udp"
+a = { kind = "udp-server", bind = "0.0.0.0:5000", reply_to = "last" }
+b = { kind = "tcp-client", address = "10.0.0.20:4000" }
+
+[[profile]]
+name = "via-serial"
+a = { kind = "uart", port = "/dev/ttyUSB0", baud_rate = 19200 }
+b = { kind = "tcp-client", address = "10.0.0.20:4000" }

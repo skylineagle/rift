@@ -1,0 +1,10 @@
+# Local devices stream to the cloud; the backup link stays off until `backup:a on`.
+[[profile]]
+name = "primary"
+a = { kind = "uart", port = "/dev/ttyUSB0", baud_rate = 115200 }
+b = { kind = "tcp-client", address = "ingest.example.com:7000", reconnect_delay_ms = 250 }
+
+[[profile]]
+name = "backup"
+a = { kind = "tcp-client", address = "backup.example.com:7000", enabled = false }
+b = { kind = "udp-server", bind = "0.0.0.0:5001" }

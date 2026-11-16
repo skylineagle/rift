@@ -1,0 +1,5 @@
+# Let TCP-only tools talk to a UDP service.
+[[profile]]
+name = "tcp-to-udp"
+a = { kind = "tcp-server", bind = "0.0.0.0:9000" }
+b = { kind = "udp-client", remote = "192.168.1.30:6000" }

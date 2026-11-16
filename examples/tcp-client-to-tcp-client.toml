@@ -1,0 +1,5 @@
+# Join two devices that only accept inbound connections.
+[[profile]]
+name = "device-link"
+a = { kind = "tcp-client", address = "192.168.1.10:4001" }
+b = { kind = "tcp-client", address = "192.168.1.11:4001", no_delay = false }

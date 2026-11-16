@@ -1,0 +1,17 @@
+[package]
+name = "rift-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rift"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
+rift-core.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

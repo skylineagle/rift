@@ -1,0 +1,5 @@
+# Send UDP datagrams to a serial device; replies go only to the last sender.
+[[profile]]
+name = "udp-serial"
+a = { kind = "udp-server", bind = "0.0.0.0:5000", reply_to = "last", peer_timeout_secs = 30 }
+b = { kind = "uart", port = "/dev/ttyUSB0", baud_rate = 38400 }

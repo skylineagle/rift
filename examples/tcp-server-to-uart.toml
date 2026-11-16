@@ -1,0 +1,11 @@
+# Share a serial device over the network: every TCP client talks to the UART.
+[[profile]]
+name = "serial-over-tcp"
+a = { kind = "tcp-server", bind = "0.0.0.0:9000" }
+b = { kind = "uart", port = "/dev/ttyUSB0", baud_rate = 115200 }
+
+# One exclusive client, 7E2 framing with hardware flow control.
+[[profile]]
+name = "serial-exclusive"
+a = { kind = "tcp-server", bind = "0.0.0.0:9001", max_clients = 1, no_delay = true }
+b = { kind = "uart", port = "/dev/ttyUSB1", baud_rate = 9600, data_bits = 7, parity = "even", stop_bits = 2, flow_control = "hardware" }

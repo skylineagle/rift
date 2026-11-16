@@ -1,0 +1,5 @@
+# Collect UDP from many senders and forward everything over one TCP stream.
+[[profile]]
+name = "udp-to-tcp"
+a = { kind = "udp-server", bind = "0.0.0.0:5000", reply_to = "all" }
+b = { kind = "tcp-client", address = "example.com:7000" }

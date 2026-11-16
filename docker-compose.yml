@@ -1,0 +1,11 @@
+services:
+  rift:
+    build: .
+    restart: unless-stopped
+    volumes:
+      - ./examples:/config:ro
+    ports:
+      - "9000:9000"
+      - "5000:5000/udp"
+    # devices:
+    #   - /dev/ttyUSB0:/dev/ttyUSB0

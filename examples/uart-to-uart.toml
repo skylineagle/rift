@@ -1,0 +1,5 @@
+# Bridge two serial ports at different speeds, e.g. a baud-rate adapter.
+[[profile]]
+name = "baud-adapter"
+a = { kind = "uart", port = "/dev/ttyUSB0", baud_rate = 9600 }
+b = { kind = "uart", port = "/dev/ttyUSB1", baud_rate = 115200 }

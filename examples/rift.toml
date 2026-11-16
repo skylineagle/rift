@@ -1,0 +1,9 @@
+[[profile]]
+name = "gps"
+a = { kind = "tcp-server", bind = "0.0.0.0:9000" }
+b = { kind = "uart", port = "/dev/ttyUSB0", baud_rate = 9600 }
+
+[[profile]]
+name = "relay"
+a = { kind = "udp-server", bind = "0.0.0.0:5000" }
+b = { kind = "tcp-client", address = "example.com:7000", enabled = false }
