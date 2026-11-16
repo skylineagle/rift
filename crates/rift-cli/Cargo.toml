@@ -1,8 +1,11 @@
 [package]
 name = "rift-cli"
+description = "Rift CLI: bridge UART, TCP and UDP endpoints from the terminal or a container"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
 
 [[bin]]
 name = "rift"

@@ -1,8 +1,14 @@
 [package]
-name = "rift-core"
+name = "rift-bridge-core"
+description = "Bridge engine for Rift: pipe bytes between UART, TCP and UDP endpoints"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+
+[lib]
+name = "rift_core"
 
 [dependencies]
 bytes.workspace = true

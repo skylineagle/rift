@@ -1,4 +1,6 @@
 mod app_state;
+#[cfg(target_os = "macos")]
+mod cli_link;
 mod commands;
 mod event_forwarder;
 
@@ -10,6 +12,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            cli_link::link_bundled_cli();
             let state = AppState::load()?;
             event_forwarder::forward_events(app.handle().clone(), state.rift.subscribe());
             app.manage(state);
