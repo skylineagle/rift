@@ -10,10 +10,35 @@ Created in [T3 Code](https://t3.codes).
 
 ## Install
 
+Download from the [latest release](https://github.com/skylineagle/rift/releases/latest):
+
+| Platform | Desktop app (includes the CLI) | CLI only |
+| --- | --- | --- |
+| Linux | `.deb`, `.rpm`, `.AppImage` | `rift-<version>-<arch>-unknown-linux-gnu.tar.gz` |
+| macOS | `.dmg` (Apple Silicon or Intel) | `rift-<version>-<arch>-apple-darwin.tar.gz` |
+| Windows | `.exe` installer | `rift-<version>-x86_64-pc-windows-msvc.zip` |
+
+Installing the desktop app also puts `rift` on your PATH: the Windows installer adds its folder to the user PATH,
+`.deb`/`.rpm` install it to `/usr/bin`, and on macOS the app links it into `/usr/local/bin` (or `~/.local/bin`) on first launch.
+The `.AppImage` does not install the CLI.
+
+CLI only, on Linux (no Rust needed, runs on glibc 2.17+, e.g. Ubuntu 14.04 and later; needs `libudev1`):
+
 ```sh
-cargo install --path crates/rift-cli   # installs `rift` into ~/.cargo/bin
-# or
-cargo build --release                  # binary: target/release/rift
+curl -fsSL https://github.com/skylineagle/rift/releases/latest/download/rift-<version>-x86_64-unknown-linux-gnu.tar.gz | tar xz
+sudo mv rift /usr/local/bin/
+```
+
+Use `aarch64` instead of `x86_64` on ARM.
+
+Container image: `docker pull ghcr.io/skylineagle/rift` (see [Container](#container)).
+
+From source (needs [Rust](https://rustup.rs) and, on Linux, `libudev-dev`):
+
+```sh
+cargo install --git https://github.com/skylineagle/rift rift-cli
+# or, from a checkout
+cargo install --path crates/rift-cli
 ```
 
 ## Usage
@@ -121,7 +146,7 @@ cd apps/desktop
 bun install
 
 bun run tauri dev      # run with hot reload
-bun run tauri build    # installable bundle (.dmg/.app, .msi/.exe, .deb/.AppImage)
+bun run tauri build    # local installable bundle (.dmg/.app, .msi/.exe, .deb/.AppImage)
 ```
 
 Bundles land in `target/release/bundle/`. On macOS, install by opening the `.dmg` and dragging Rift to Applications.
@@ -129,6 +154,8 @@ Bundles land in `target/release/bundle/`. On macOS, install by opening the `.dmg
 ## Container
 
 Image runs `rift run --all --log json` against `/config/rift.toml` by default.
+Released images are published for `linux/amd64` and `linux/arm64` as `ghcr.io/skylineagle/rift:<version>` and `:latest`;
+use that name in place of `rift` below to skip the local build.
 
 ```sh
 docker compose up --build      # uses docker-compose.yml, mounts ./examples as /config
@@ -163,5 +190,18 @@ Bind servers to `0.0.0.0` inside the container so published ports reach them. Se
 
 ## Crates
 
-- `rift-core`: bridge engine, endpoints, profiles, payloads (async, serde-serializable; reused by the desktop app).
+- `rift-core` (package `rift-bridge-core`): bridge engine, endpoints, profiles, payloads (async, serde-serializable; reused by the desktop app).
 - `rift-cli`: the `rift` command.
+
+## Releasing
+
+Bump `version` in the root `Cargo.toml`, commit, then push a matching tag:
+
+```sh
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+`.github/workflows/release.yml` builds the CLI archives, desktop installers and Docker image, attaches them to a draft
+GitHub release and publishes it once everything succeeds. CI (`.github/workflows/ci.yml`) runs on every push to `main` and on pull requests.
+macOS signing and notarization are used when the `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`,
+`APPLE_ID`, `APPLE_PASSWORD` and `APPLE_TEAM_ID` secrets are set.
