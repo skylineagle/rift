@@ -9,7 +9,10 @@ fn toml_files(dir: &Path) -> Vec<PathBuf> {
         .flat_map(|path| {
             if path.is_dir() {
                 toml_files(&path)
-            } else if path.extension().is_some_and(|extension| extension == "toml") {
+            } else if path
+                .extension()
+                .is_some_and(|extension| extension == "toml")
+            {
                 vec![path]
             } else {
                 vec![]
@@ -24,7 +27,12 @@ fn every_example_config_loads() {
     let files = toml_files(&examples);
     assert!(!files.is_empty());
     for file in files {
-        let store = ProfileStore::load(&file).unwrap_or_else(|error| panic!("{}: {error}", file.display()));
-        assert!(!store.list().is_empty(), "{} has no profiles", file.display());
+        let store =
+            ProfileStore::load(&file).unwrap_or_else(|error| panic!("{}: {error}", file.display()));
+        assert!(
+            !store.list().is_empty(),
+            "{} has no profiles",
+            file.display()
+        );
     }
 }

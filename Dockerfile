@@ -3,6 +3,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends libudev-dev pkg
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+RUN sed -i "s#, \"apps/desktop/src-tauri\"##" Cargo.toml
 RUN cargo build --release -p rift-cli
 
 FROM debian:bookworm-slim

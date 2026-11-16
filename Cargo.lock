@@ -2836,19 +2836,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rift-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "rift-core",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "rift-core"
+name = "rift-bridge-core"
 version = "0.1.0"
 dependencies = [
  "bytes",
@@ -2865,10 +2853,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "rift-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "rift-bridge-core",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "rift-desktop"
 version = "0.1.0"
 dependencies = [
- "rift-core",
+ "rift-bridge-core",
  "serde",
  "tauri",
  "tauri-build",
