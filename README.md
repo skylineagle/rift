@@ -133,6 +133,14 @@ While running, stdin lines inject data: `[profile:]<a|b|both> <text|hex|bin|file
 e.g. `a hex de ad be ef`, `gps:both text hello\r\n`, `b file ./frame.bin`.
 Switch a side at runtime with `[profile:]<a|b> <on|off>`, e.g. `b off`, `gps:a on`.
 
+## Agent skills
+
+Skills that teach AI agents to run pipes and manage profiles live in [`skills/`](skills):
+
+```sh
+npx skills add skylineagle/rift
+```
+
 ## Desktop app
 
 A Tauri desktop app (`apps/desktop`) wraps the same engine with a UI for profiles, live traffic and data injection.
