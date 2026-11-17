@@ -3,7 +3,7 @@ members = ["crates/rift-core", "crates/rift-cli", "apps/desktop/src-tauri"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/skylineagle/rift"
@@ -22,4 +22,4 @@ tokio = { version = "1", features = ["full"] }
 tokio-serial = "5"
 tokio-util = "0.7"
 toml = "0.8"
-rift-core = { package = "rift-bridge-core", path = "crates/rift-core", version = "0.2.0" }
+rift-core = { package = "rift-bridge-core", path = "crates/rift-core", version = "0.2.1" }
