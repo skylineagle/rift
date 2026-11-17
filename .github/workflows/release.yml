@@ -17,17 +17,23 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
       - id: version
         run: |
           version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "rift-cli") | .version')
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match workspace version $version"
-            exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-      - run: gh release create "$GITHUB_REF_NAME" --draft --generate-notes --title "Rift $GITHUB_REF_NAME"
+          case "$GITHUB_REF_NAME" in
+            "v$version") prerelease=false ;;
+            "v$version"-*) prerelease=true ;;
+            *)
+              echo "::error::Tag $GITHUB_REF_NAME does not match workspace version $version"
+              exit 1
+              ;;
+          esac
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+      - run: gh release create "$GITHUB_REF_NAME" --draft --generate-notes --title "Rift $GITHUB_REF_NAME" --prerelease=${{ steps.version.outputs.prerelease }}
         env:
           GH_TOKEN: ${{ github.token }}
 
@@ -68,7 +74,7 @@ jobs:
           else
             tar czf "$GITHUB_WORKSPACE/$name.tar.gz" rift
           fi
-      - run: gh release upload "$GITHUB_REF_NAME" rift-*.{tar.gz,zip} --clobber
+      - run: gh release upload "$GITHUB_REF_NAME" rift-v* --clobber
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -105,15 +111,26 @@ jobs:
           cp "target/${{ matrix.target }}/release/rift$extension" "apps/desktop/src-tauri/binaries/rift-${{ matrix.target }}$extension"
       - run: bun install --frozen-lockfile
         working-directory: apps/desktop
-      - uses: tauri-apps/tauri-action@v0
+      - name: Enable macOS signing when secrets exist
+        if: runner.os == 'macOS'
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ github.token }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          [ -n "$APPLE_CERTIFICATE" ] || exit 0
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            echo "$name<<EOF" >> "$GITHUB_ENV"
+            printenv "$name" >> "$GITHUB_ENV"
+            echo "EOF" >> "$GITHUB_ENV"
+          done
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         with:
           projectPath: apps/desktop
           tauriScript: bun run tauri
@@ -157,15 +174,16 @@ jobs:
           password: ${{ github.token }}
       - run: |
           version=${{ needs.prepare.outputs.version }}
-          docker buildx imagetools create \
-            -t "$IMAGE:$version" -t "$IMAGE:latest" \
+          tags=(-t "$IMAGE:$version")
+          [ "${{ needs.prepare.outputs.prerelease }}" = "false" ] && tags+=(-t "$IMAGE:latest")
+          docker buildx imagetools create "${tags[@]}" \
             "$IMAGE:$version-amd64" "$IMAGE:$version-arm64"
 
   publish:
-    needs: [cli, desktop, docker-manifest]
+    needs: [prepare, cli, desktop, docker-manifest]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - run: gh release edit "$GITHUB_REF_NAME" --draft=false --latest
+      - run: gh release edit "$GITHUB_REF_NAME" --draft=false --latest=${{ needs.prepare.outputs.prerelease == 'false' }}
         env:
           GH_TOKEN: ${{ github.token }}
