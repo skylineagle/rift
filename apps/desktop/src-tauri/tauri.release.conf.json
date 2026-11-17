@@ -1,6 +1,6 @@
 {
   "bundle": {
-    "targets": ["deb", "rpm", "appimage", "dmg", "nsis"],
+    "targets": ["deb", "rpm", "appimage", "app", "dmg", "nsis"],
     "externalBin": ["binaries/rift"],
     "windows": {
       "nsis": { "installerHooks": "windows/hooks.nsh" }
