@@ -2,7 +2,7 @@ import { expect, mock, test } from "bun:test";
 import { Window } from "happy-dom";
 import type { RiftEvent } from "@/lib/types";
 
-mock.module("@tauri-apps/api/event", () => ({ listen: async () => () => undefined }));
+mock.module("@tauri-apps/api/core", () => ({ invoke: async () => undefined, Channel: class {} }));
 const { attachReceiveActivity } = await import("@/lib/receiveActivity");
 const browser = new Window();
 Object.assign(globalThis, { document: browser.document });
@@ -16,7 +16,7 @@ const setup = (side: "A" | "B" = "A") => {
     return unsubscribe;
   });
   const emit = (changes: Partial<Extract<RiftEvent, { type: "data" }>> = {}) => listener({
-    type: "data", profile: "test", timestamp: "now", source: "A", target: "B", origin: "received", bytes: [65], delivered: false, ...changes,
+    type: "data", profile: "test", timestamp: "now", source: "A", target: "B", origin: "received", bytes: Uint8Array.of(65), length: 1, delivered: false, ...changes,
   });
   const active = () => element.hasAttribute("data-receiving");
   return { element, emit, active, cleanup, unsubscribe };

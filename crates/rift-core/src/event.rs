@@ -32,7 +32,7 @@ impl fmt::Display for ConnectionState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Origin {
     Received,
@@ -60,6 +60,14 @@ pub enum Event {
         side: Side,
         state: ConnectionState,
     },
+    Dropped {
+        profile: String,
+        timestamp: DateTime<Utc>,
+        side: Side,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        peer: Option<String>,
+        chunks: u64,
+    },
 }
 
 impl Event {
@@ -80,6 +88,16 @@ impl Event {
             bytes: bytes.to_vec(),
             delivered,
             undelivered_reason: None,
+        }
+    }
+
+    pub fn dropped(profile: &str, side: Side, peer: Option<String>, chunks: u64) -> Self {
+        Event::Dropped {
+            profile: profile.to_string(),
+            timestamp: Utc::now(),
+            side,
+            peer,
+            chunks,
         }
     }
 

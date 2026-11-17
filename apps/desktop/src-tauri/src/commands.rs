@@ -4,9 +4,16 @@ use rift_core::{
     list_serial_ports, parse_payload, BridgeStatus, Error, PayloadFormat, Profile, Result,
     SerialPortInfo, Side, Target,
 };
+use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::State;
 
 use crate::app_state::AppState;
+use crate::event_forwarder::EventSink;
+
+#[tauri::command]
+pub fn subscribe_events(sink: State<EventSink>, channel: Channel<InvokeResponseBody>) {
+    sink.attach(channel);
+}
 
 #[tauri::command]
 pub fn list_profiles(state: State<AppState>) -> Vec<Profile> {

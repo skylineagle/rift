@@ -7,8 +7,10 @@ use bytes::Bytes;
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
+use crate::drops::DropTally;
 use crate::event::{ConnectionState, Event, Origin};
 use crate::peers::PeerCounter;
+use crate::side::Side;
 
 pub(crate) struct Link {
     pub writes: mpsc::Receiver<WriteRequest>,
@@ -47,6 +49,25 @@ impl WriteRequest {
             {
                 *undelivered_reason = Some(reason);
             }
+        }
+    }
+
+    pub fn report_dropped(&self, peer: Option<String>, chunks: u64) {
+        if let Some(reporter) = self.drop_reporter() {
+            reporter.report(peer, chunks);
+        }
+    }
+
+    fn drop_reporter(&self) -> Option<DropReporter> {
+        match &self.receipt.event {
+            Event::Data {
+                profile, target, ..
+            } => Some(DropReporter {
+                profile: profile.clone(),
+                side: *target,
+                events: self.receipt.events.clone(),
+            }),
+            _ => None,
         }
     }
 
@@ -112,13 +133,66 @@ impl WriteSource for mpsc::Receiver<WriteRequest> {
     }
 }
 
-impl WriteSource for broadcast::Receiver<WriteRequest> {
+struct DropReporter {
+    profile: String,
+    side: Side,
+    events: broadcast::Sender<Event>,
+}
+
+impl DropReporter {
+    fn report(&self, peer: Option<String>, chunks: u64) {
+        let _ = self
+            .events
+            .send(Event::dropped(&self.profile, self.side, peer, chunks));
+    }
+}
+
+pub(crate) struct PeerWrites {
+    receiver: broadcast::Receiver<WriteRequest>,
+    peer: String,
+    drops: DropTally,
+    reporter: Option<DropReporter>,
+}
+
+impl PeerWrites {
+    pub fn new(receiver: broadcast::Receiver<WriteRequest>, peer: String) -> Self {
+        Self {
+            receiver,
+            peer,
+            drops: DropTally::default(),
+            reporter: None,
+        }
+    }
+
+    fn flush_drops(&mut self) {
+        let Some(reporter) = &self.reporter else {
+            return;
+        };
+        if let Some(chunks) = self.drops.take_due() {
+            reporter.report(Some(self.peer.clone()), chunks);
+        }
+    }
+}
+
+impl WriteSource for PeerWrites {
     async fn next(&mut self) -> Option<WriteRequest> {
         loop {
-            match self.recv().await {
-                Ok(bytes) => return Some(bytes),
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(broadcast::error::RecvError::Closed) => return None,
+            let due = self.drops.next_due();
+            tokio::select! {
+                received = self.receiver.recv() => match received {
+                    Ok(request) => {
+                        if self.reporter.is_none() {
+                            self.reporter = request.drop_reporter();
+                        }
+                        self.flush_drops();
+                        return Some(request);
+                    }
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => self.drops.add(skipped),
+                    Err(broadcast::error::RecvError::Closed) => return None,
+                },
+                _ = tokio::time::sleep_until(due.unwrap_or_else(tokio::time::Instant::now)), if due.is_some() => {
+                    self.flush_drops();
+                }
             }
         }
     }

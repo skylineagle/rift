@@ -3,8 +3,7 @@ import { Window } from "happy-dom";
 const browser = new Window();
 Object.assign(globalThis, { window: browser, getComputedStyle: browser.getComputedStyle.bind(browser), document: browser.document, navigator: browser.navigator, HTMLElement: browser.HTMLElement, HTMLFormElement: browser.HTMLFormElement, DocumentFragment: browser.DocumentFragment, Event: browser.Event, CustomEvent: browser.CustomEvent, ResizeObserver: browser.ResizeObserver, IS_REACT_ACT_ENVIRONMENT: true });
 const inject = mock(async (..._args: unknown[]) => undefined);
-mock.module("@tauri-apps/api/core", () => ({ invoke: async () => undefined }));
-mock.module("@tauri-apps/api/event", () => ({ listen: async () => () => undefined }));
+mock.module("@tauri-apps/api/core", () => ({ invoke: async () => undefined, Channel: class {} }));
 mock.module("@/lib/tauriApi", () => ({ inject, previewPayload: async () => [65], bridgeStatus: async () => [], exportLog: async () => undefined }));
 mock.module("@tauri-apps/plugin-dialog", () => ({ open: async () => "/tmp/payload.bin", save: async () => null }));
 const { act } = await import("react");
@@ -25,7 +24,7 @@ const click = async (label: string) => {
   if (!button) throw new Error(`Missing ${label}`);
   await act(async () => button.click());
 };
-const row = (id: number) => ({ ...rowFromEvent({ type: "data", profile: "test", timestamp: "2026-11-16T00:00:00Z", source: "A", target: "B", origin: "received", bytes: [65], delivered: true }), id });
+const row = (id: number) => ({ ...rowFromEvent({ type: "data", profile: "test", timestamp: "2026-11-16T00:00:00Z", source: "A", target: "B", origin: "received", bytes: Uint8Array.of(65), length: 1, delivered: true }), id });
 
 test("scroll-up holds new rows, chip and manual bottom resume, explicit pause remains", async () => {
   let jumps = 0;

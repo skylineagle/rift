@@ -38,7 +38,7 @@ const advance = (target: number) => {
 };
 const data = (source: "A" | "B", origin: "received" | "forwarded", size: number): DataEvent => ({
   type: "data", profile: "test", timestamp: "", source,
-  target: source === "A" ? "B" : "A", origin, bytes: Array<number>(size).fill(1), delivered: true,
+  target: source === "A" ? "B" : "A", origin, bytes: new Uint8Array(size).fill(1), length: size, delivered: true,
 });
 test("rates expire independently without further events and counters count each event once", () => {
   markRunning("test");

@@ -161,7 +161,7 @@ Bundles land in `target/release/bundle/`. On macOS, install by opening the `.dmg
 
 ## Container
 
-Image runs `rift run --all --log json` against `/config/rift.toml` by default.
+Image runs `rift run --all --log json --quiet` against `/config/rift.toml` by default, so only status events are logged. Override the command without `--quiet` to log traffic too.
 Released images are published for `linux/amd64` and `linux/arm64` as `ghcr.io/skylineagle/rift:<version>` and `:latest`;
 use that name in place of `rift` below to skip the local build.
 

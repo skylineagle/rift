@@ -2,7 +2,7 @@ import type { FC } from "react";
 
 import { hexDumpLines } from "@/lib/format";
 
-export type HexDumpProps = { bytes: number[] };
+export type HexDumpProps = { bytes: Uint8Array };
 
 export const DUMP_LINE_HEIGHT = 18;
 export const DUMP_PADDING = 16;

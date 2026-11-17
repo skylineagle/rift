@@ -1,31 +1,23 @@
-import { listen } from "@tauri-apps/api/event";
+import { Channel, invoke } from "@tauri-apps/api/core";
 
+import { decodeEventBatch } from "@/lib/eventBatch";
 import type { RiftEvent } from "@/lib/types";
 
 type EventListener = (event: RiftEvent) => void;
-type BatchListener = (events: RiftEvent[]) => void;
+type BatchListener = (events: RiftEvent[], lagged: number) => void;
 
 const eventListeners = new Set<EventListener>();
 const batchListeners = new Set<BatchListener>();
-let pendingEvents: RiftEvent[] = [];
-let scheduledFrame = 0;
 
-const flushBatch = () => {
-  scheduledFrame = 0;
-  const batch = pendingEvents;
-  pendingEvents = [];
-  batchListeners.forEach((listener) => listener(batch));
+const receive = (buffer: ArrayBuffer) => {
+  const { events, lagged } = decodeEventBatch(buffer);
+  events.forEach((event) => eventListeners.forEach((listener) => listener(event)));
+  batchListeners.forEach((listener) => listener(events, lagged));
 };
 
-const receive = (event: RiftEvent) => {
-  eventListeners.forEach((listener) => listener(event));
-  pendingEvents.push(event);
-  if (!scheduledFrame) scheduledFrame = requestAnimationFrame(flushBatch);
-};
+const connect = () => invoke("subscribe_events", { channel: new Channel<ArrayBuffer>(receive) });
 
-listen<RiftEvent>("rift://event", ({ payload }) => receive(payload)).catch(
-  () => undefined,
-);
+Promise.resolve().then(connect).catch(() => undefined);
 
 export const subscribeToEvents = (listener: EventListener) => {
   eventListeners.add(listener);
