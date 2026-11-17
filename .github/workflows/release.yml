@@ -74,6 +74,10 @@ jobs:
           else
             tar czf "$GITHUB_WORKSPACE/$name.tar.gz" rift
           fi
+          cd "$GITHUB_WORKSPACE"
+          for archive in "$name".*; do
+            if command -v sha256sum >/dev/null; then sha256sum "$archive"; else shasum -a 256 "$archive"; fi > "$archive.sha256"
+          done
       - run: gh release upload "$GITHUB_REF_NAME" rift-v* --clobber
         shell: bash
         env:
@@ -128,13 +132,22 @@ jobs:
             printenv "$name" >> "$GITHUB_ENV"
             echo "EOF" >> "$GITHUB_ENV"
           done
+      - name: Enable updater artifacts when the signing key exists
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || exit 0
+          echo "UPDATER_CONFIG=--config src-tauri/tauri.updater.conf.json" >> "$GITHUB_ENV"
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: apps/desktop
           tauriScript: bun run tauri
-          args: --target ${{ matrix.target }} --config src-tauri/tauri.release.conf.json
+          args: --target ${{ matrix.target }} --config src-tauri/tauri.release.conf.json ${{ env.UPDATER_CONFIG }}
           tagName: ${{ github.ref_name }}
           releaseDraft: true
 

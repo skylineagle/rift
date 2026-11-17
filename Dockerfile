@@ -13,4 +13,4 @@ COPY --from=build /src/target/release/rift /usr/local/bin/rift
 USER rift
 ENV RIFT_CONFIG=/config/rift.toml
 ENTRYPOINT ["rift"]
-CMD ["run", "--all", "--log", "json"]
+CMD ["run", "--all", "--log", "json", "--quiet"]

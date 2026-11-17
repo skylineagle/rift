@@ -2,10 +2,12 @@ use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{broadcast, mpsc, watch, Mutex as AsyncMutex};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::drops::DropTally;
 use crate::endpoint::link::{Context, Link, WriteRequest};
 use crate::endpoint::{self, Endpoint};
 use crate::event::{ConnectionState, Event, Origin};
@@ -34,6 +36,7 @@ struct OpenLink {
     writes: mpsc::Sender<WriteRequest>,
     peers: PeerCounter,
     tcp_server: bool,
+    drops: DropTally,
 }
 
 #[derive(Clone)]
@@ -44,8 +47,8 @@ struct SideHandle {
 
 impl SideHandle {
     fn deliver(&self, request: WriteRequest) -> Result<bool, String> {
-        let open = self.open.lock().unwrap();
-        let Some(link) = open.as_ref() else {
+        let mut open = self.open.lock().unwrap();
+        let Some(link) = open.as_mut() else {
             request.unavailable("paused".to_string());
             return Ok(false);
         };
@@ -55,10 +58,20 @@ impl SideHandle {
             }
             return Ok(false);
         }
-        link.writes
-            .try_send(request)
-            .map(|_| true)
-            .map_err(|error| error.to_string())
+        if let Some(chunks) = link.drops.take_due() {
+            request.report_dropped(None, chunks);
+        }
+        match link.writes.try_send(request) {
+            Ok(()) => Ok(true),
+            Err(TrySendError::Full(request)) => {
+                link.drops.add(1);
+                if let Some(chunks) = link.drops.take_due() {
+                    request.report_dropped(None, chunks);
+                }
+                Ok(false)
+            }
+            Err(error) => Err(error.to_string()),
+        }
     }
 
     fn status(&self) -> SideStatus {
@@ -99,6 +112,7 @@ impl SideControl {
         *self.handle.open.lock().unwrap() = Some(OpenLink {
             writes: writes_sender,
             peers: peers.clone(),
+            drops: DropTally::default(),
             tcp_server: matches!(*self.endpoint.lock().unwrap(), Endpoint::TcpServer(_)),
         });
         let link = Link {

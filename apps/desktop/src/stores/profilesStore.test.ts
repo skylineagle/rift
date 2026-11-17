@@ -135,7 +135,7 @@ test("receive and forward events count each byte once and injection only counts 
     for (const origin of ["received", "forwarded"] as const) {
       bridge = applyEvent(bridge, {
         type: "data", profile: "test", timestamp: new Date().toISOString(),
-        source, target, origin, bytes: [1, 2, 3], delivered: true,
+        source, target, origin, bytes: Uint8Array.of(1, 2, 3), length: 3, delivered: true,
       });
     }
   }
@@ -143,7 +143,7 @@ test("receive and forward events count each byte once and injection only counts 
   for (const delivered of [false, true]) {
     bridge = applyEvent(bridge, {
       type: "data", profile: "test", timestamp: new Date().toISOString(),
-      source: "A", target: "B", origin: "injected", bytes: [1, 2], delivered,
+      source: "A", target: "B", origin: "injected", bytes: Uint8Array.of(1, 2), length: 2, delivered,
     });
   }
   expect(bridge.counters).toEqual({ A: { received: 3, sent: 3 }, B: { received: 3, sent: 5 } });

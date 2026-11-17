@@ -68,7 +68,8 @@ export type DataEvent = {
   source: SideName;
   target: SideName;
   origin: Origin;
-  bytes: number[];
+  bytes: Uint8Array;
+  length: number;
   delivered: boolean;
   undelivered_reason?: string;
 };
@@ -81,7 +82,28 @@ export type StatusEvent = {
   state: ConnectionState;
 };
 
-export type RiftEvent = DataEvent | StatusEvent;
+export type DroppedEvent = {
+  type: "dropped";
+  profile: string;
+  timestamp: string;
+  side: SideName;
+  peer?: string;
+  chunks: number;
+};
+
+export type SkippedEvent = {
+  type: "skipped";
+  profile: string;
+  timestamp: string;
+  source: SideName;
+  target: SideName;
+  origin: Origin;
+  delivered: boolean;
+  chunks: number;
+  length: number;
+};
+
+export type RiftEvent = DataEvent | StatusEvent | DroppedEvent | SkippedEvent;
 
 export type SideStatus = { state: ConnectionState; peers: number };
 export type BridgeStatus = { profile: string; a: SideStatus; b: SideStatus };

@@ -77,7 +77,7 @@ Live stdin commands target a profile by name: `gps:a hex de ad`, `backup:a on`, 
 
 ## Docker
 
-The image runs `rift run --all --log json` on `/config/rift.toml`:
+The image runs `rift run --all --log json --quiet` on `/config/rift.toml`:
 
 ```sh
 docker run --rm -v "$PWD:/config:ro" -p 9000:9000 ghcr.io/skylineagle/rift

@@ -2,24 +2,32 @@ mod app_state;
 #[cfg(target_os = "macos")]
 mod cli_link;
 mod commands;
+mod event_batch;
 mod event_forwarder;
 
 use tauri::Manager;
 
 use app_state::AppState;
+use event_forwarder::EventSink;
 
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             cli_link::link_bundled_cli();
             let state = AppState::load()?;
-            event_forwarder::forward_events(app.handle().clone(), state.rift.subscribe());
+            let sink = EventSink::default();
+            event_forwarder::forward_events(sink.clone(), state.rift.subscribe());
             app.manage(state);
+            app.manage(sink);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::subscribe_events,
             commands::list_profiles,
             commands::prepare_config_import,
             commands::import_config,

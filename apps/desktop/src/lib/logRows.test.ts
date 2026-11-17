@@ -5,7 +5,7 @@ import type { DataEvent, Origin, SideName } from "@/lib/types";
 
 const eventFor = (origin: Origin, source: SideName = "A", delivered = true): DataEvent => ({
   type: "data", profile: "test", timestamp: "2026-11-16T00:00:00Z",
-  source, target: source === "A" ? "B" : "A", origin, bytes: [104, 105], delivered,
+  source, target: source === "A" ? "B" : "A", origin, bytes: Uint8Array.of(104, 105), length: 2, delivered,
 });
 
 test("receive rows identify the side and are separate from direction filters", () => {
@@ -40,7 +40,7 @@ test("listener unavailability explains the injection result in rows, searches an
   });
   expect(rowToText(row)).toContain("Not delivered: Side A is listening but has no connected clients");
   expect(matchesFilter(row, { direction: "BA", injectedOnly: true, query: "no connected clients" })).toBe(true);
-  expect(row).toMatchObject({ type: "data", origin: "injected", delivered: false, bytes: [104, 105] });
+  expect(row).toMatchObject({ type: "data", origin: "injected", delivered: false, bytes: Uint8Array.of(104, 105) });
 });
 
 test("paused injections explain both targets as data rows without error labels", () => {
@@ -53,6 +53,6 @@ test("paused injections explain both targets as data rows without error labels",
     expect(rowToText(row)).toContain(dropText(row));
     expect(rowToText(row).toLowerCase()).not.toContain("error");
     expect(matchesFilter(row, { direction: "all", injectedOnly: true, query: "paused" })).toBe(true);
-    expect(row).toMatchObject({ origin: "injected", delivered: false, bytes: [104, 105] });
+    expect(row).toMatchObject({ origin: "injected", delivered: false, bytes: Uint8Array.of(104, 105) });
   }
 });

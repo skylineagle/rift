@@ -75,7 +75,8 @@ export const applyEvent = (bridge: BridgeRuntime, event: RiftEvent): BridgeRunti
       },
     };
   }
-  const size = event.bytes.length;
+  if (event.type === "dropped") return bridge;
+  const size = event.length;
   const source = bridge.counters[event.source];
   const target = bridge.counters[event.target];
   return {
@@ -94,8 +95,9 @@ export const applyEvent = (bridge: BridgeRuntime, event: RiftEvent): BridgeRunti
 };
 
 const recordRate = (event: RiftEvent) => {
-  if (event.type !== "data" || (event.origin !== "received" && !event.delivered)) return;
-  if (!selectBridge(bridgeStore.getState(), event.profile).running || event.bytes.length === 0) return;
+  if (event.type !== "data" && event.type !== "skipped") return;
+  if (event.origin !== "received" && !event.delivered) return;
+  if (!selectBridge(bridgeStore.getState(), event.profile).running || event.length === 0) return;
   const side = event.origin === "received" ? event.source : event.target;
   const boundary = pausedSides.get(event.profile)?.[side];
   if (boundary !== undefined && (boundary === Infinity || Date.parse(event.timestamp) < boundary)) return;
@@ -104,7 +106,7 @@ const recordRate = (event: RiftEvent) => {
   const samples = rateSamples.get(event.profile) ?? [];
   const timestamp = performance.now();
   for (const key of directions) {
-    samples.push({ timestamp, size: event.bytes.length, direction: key });
+    samples.push({ timestamp, size: event.length, direction: key });
     lastActivity.set(event.profile, { ...lastActivity.get(event.profile), [key]: timestamp });
   }
   rateSamples.set(event.profile, samples);
@@ -115,7 +117,7 @@ subscribeToBatches((events) => {
   bridgeStore.setState((state) => {
     let bridges = state.bridges;
     for (const event of events) {
-      if (event.type === "data") {
+      if (event.type === "data" || event.type === "skipped") {
         const side = event.origin === "received" ? event.source : event.target;
         const boundary = pausedSides.get(event.profile)?.[side];
         if (boundary !== undefined && (boundary === Infinity || Date.parse(event.timestamp) < boundary)) continue;

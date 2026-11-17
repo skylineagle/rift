@@ -1,6 +1,6 @@
 import { describeConnectionState } from "@/lib/sideStatus";
-import { hexString, printableAscii } from "@/lib/format";
-import type { Origin, RiftEvent, SideName } from "@/lib/types";
+import { formatBytes, formatInteger, hexString, printableAscii } from "@/lib/format";
+import type { DroppedEvent, Origin, RiftEvent, SideName, SkippedEvent } from "@/lib/types";
 
 export type LogDirection = "A" | "B" | "AB" | "BA";
 export type LogLevel = "ok" | "warn" | "err";
@@ -11,7 +11,7 @@ export type DataRow = {
   time: number;
   direction: LogDirection;
   origin: Origin;
-  bytes: number[];
+  bytes: Uint8Array;
   delivered: boolean;
   undelivered_reason?: string;
 };
@@ -36,8 +36,20 @@ export const statusRow = (
   time = Date.now(),
 ): StatusRow => ({ id: ++nextRowId, type: "status", time, side, level, text });
 
+const chunkCount = (chunks: number) => `${formatInteger(chunks)} ${chunks === 1 ? "chunk" : "chunks"}`;
+
+const droppedText = (event: DroppedEvent) =>
+  `${event.peer ? `${event.peer} ` : ""}couldn't keep up, dropped ${chunkCount(event.chunks)}`;
+
+const skippedText = (event: SkippedEvent) => {
+  const route = event.origin === "received" ? `${event.source} received` : `${event.source}→${event.target}`;
+  return `${route}: ${chunkCount(event.chunks)} (${formatBytes(event.length)}) not shown, too fast to display`;
+};
+
 export const rowFromEvent = (event: RiftEvent): LogRow => {
   const time = Date.parse(event.timestamp);
+  if (event.type === "dropped") return statusRow(event.side, "warn", droppedText(event), time);
+  if (event.type === "skipped") return statusRow(null, "warn", skippedText(event), time);
   if (event.type === "status") {
     const level =
       event.state.state === "error"

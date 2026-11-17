@@ -50,6 +50,21 @@ pub fn render(event: &Event, format: LogFormat, quiet: bool) -> Option<String> {
             side,
             state,
         } => Some(format!("{} {profile} {side} {state}", clock(timestamp))),
+        Event::Dropped {
+            profile,
+            timestamp,
+            side,
+            peer,
+            chunks,
+        } => {
+            let peer = peer
+                .as_ref()
+                .map_or_else(String::new, |peer| format!(" {peer}"));
+            Some(format!(
+                "{} {profile} {side}{peer} couldn't keep up, dropped {chunks} chunks",
+                clock(timestamp)
+            ))
+        }
     }
 }
 

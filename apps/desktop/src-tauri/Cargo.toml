@@ -14,7 +14,12 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 rift-core.workspace = true
+chrono.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tokio.workspace = true
+tauri-plugin-updater = "2.14.1"
+tauri-plugin-process = "2.4.0"
+tauri-plugin-opener = "2.7.3"

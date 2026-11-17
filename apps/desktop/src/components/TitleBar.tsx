@@ -1,6 +1,7 @@
 import type { FC } from "react";
 
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { UpdatePill } from "@/components/UpdatePill";
 
 export const TitleBar: FC = () => (
   <div
@@ -15,6 +16,7 @@ export const TitleBar: FC = () => (
       Rift
     </span>
     <span data-tauri-drag-region className="flex-1 self-stretch" />
+    <UpdatePill />
     <ThemeToggle />
   </div>
 );

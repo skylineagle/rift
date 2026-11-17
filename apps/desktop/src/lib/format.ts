@@ -19,23 +19,27 @@ export const formatTime = (timestamp: number) => {
 
 const hexByte = (byte: number) => byte.toString(16).toUpperCase().padStart(2, "0");
 
-export const hexString = (bytes: number[], limit = bytes.length) => {
-  const shown = bytes.slice(0, limit).map(hexByte).join(" ");
+export type Bytes = Uint8Array | number[];
+
+export const hexString = (bytes: Bytes, limit = bytes.length) => {
+  const shown = Array.from(bytes.slice(0, limit), hexByte).join(" ");
   return limit < bytes.length ? `${shown} …` : shown;
 };
 
-export const printableAscii = (bytes: number[]) =>
-  bytes.map((byte) => (byte >= 32 && byte < 127 ? String.fromCharCode(byte) : ".")).join("");
+const printableChar = (byte: number) =>
+  byte >= 32 && byte < 127 ? String.fromCharCode(byte) : ".";
+
+export const printableAscii = (bytes: Bytes) => Array.from(bytes, printableChar).join("");
 
 export type HexDumpLine = { offset: string; hex: string; ascii: string };
 
-export const hexDumpLines = (bytes: number[]): HexDumpLine[] => {
+export const hexDumpLines = (bytes: Bytes): HexDumpLine[] => {
   const lines: HexDumpLine[] = [];
   for (let offset = 0; offset < bytes.length; offset += 16) {
     const chunk = bytes.slice(offset, offset + 16);
     lines.push({
       offset: offset.toString(16).padStart(4, "0"),
-      hex: chunk.map(hexByte).join(" ").padEnd(47, " "),
+      hex: Array.from(chunk, hexByte).join(" ").padEnd(47, " "),
       ascii: printableAscii(chunk),
     });
   }

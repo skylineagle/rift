@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 
-use super::link::{Context, Link, WriteRequest};
+use super::link::{Context, Link, PeerWrites, WriteRequest};
 use super::stream::pump;
 use super::tcp_client::default_no_delay;
 use crate::event::ConnectionState;
@@ -78,8 +78,9 @@ async fn serve_client(
     stream: TcpStream,
     peer: String,
     context: Context,
-    mut writes: broadcast::Receiver<WriteRequest>,
+    writes: broadcast::Receiver<WriteRequest>,
 ) {
+    let mut writes = PeerWrites::new(writes, peer.clone());
     context
         .report(ConnectionState::Connected { peer: peer.clone() })
         .await;

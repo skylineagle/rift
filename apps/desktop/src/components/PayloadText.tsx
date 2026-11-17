@@ -5,7 +5,7 @@ import { hexString } from "@/lib/format";
 export type PayloadView = "ascii" | "hex";
 
 export type PayloadTextProps = {
-  bytes: number[];
+  bytes: Uint8Array;
   view: PayloadView;
 };
 
@@ -21,7 +21,7 @@ export const PayloadText: FC<PayloadTextProps> = ({ bytes, view }) => {
   const shown = bytes.slice(0, ASCII_LIMIT);
   return (
     <>
-      {shown.map((byte, index) =>
+      {Array.from(shown, (byte, index) =>
         byte >= 32 && byte < 127 ? (
           String.fromCharCode(byte)
         ) : (

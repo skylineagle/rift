@@ -22,6 +22,10 @@ pub enum Command {
         action: ProfileAction,
     },
     Ports,
+    Update {
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 #[derive(Args)]

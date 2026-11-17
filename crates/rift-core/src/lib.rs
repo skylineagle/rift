@@ -1,6 +1,7 @@
 mod bridge;
 mod config_import;
 mod config_path;
+mod drops;
 pub mod endpoint;
 mod error;
 mod event;

@@ -2,6 +2,11 @@ services:
   rift:
     build: .
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     volumes:
       - ./examples:/config:ro
     ports:
