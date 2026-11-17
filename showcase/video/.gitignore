@@ -1,0 +1,10 @@
+node_modules
+.DS_Store
+out/*
+!out/promo/
+out/promo/*
+!out/promo/v1/
+out/promo/v1/*
+!out/promo/v1/promo.mp4
+!out/promo/v1/poster.jpg
+public/audio/promo/*.wav

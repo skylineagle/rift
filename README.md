@@ -8,6 +8,12 @@
 
 Created in [T3 Code](https://t3.codes).
 
+<p align="center">
+  <a href="showcase/video/out/promo/v1/promo.mp4"><img src="showcase/video/out/promo/v1/poster.jpg" width="720" alt="Watch the rift demo video"></a>
+  <br>
+  <a href="showcase/video/out/promo/v1/promo.mp4">Watch the 30s demo</a> · <a href="showcase/deck">Slide deck</a> (open-slide: <code>cd showcase/deck && bun install && bun run dev</code>)
+</p>
+
 ## Install
 
 Download from the [latest release](https://github.com/skylineagle/rift/releases/latest):
