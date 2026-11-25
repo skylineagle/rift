@@ -1,0 +1,10 @@
+t=5s total 156.9MB/s lost 233573 rss 34.8MB cpu 277% threads 13 fds 45 dropped 15532
+t=10s total 166.9MB/s lost 597909 rss 36.2MB cpu 270% threads 12 fds 45 dropped 36543
+t=15s total 188.7MB/s lost 788565 rss 36.8MB cpu 314% threads 12 fds 45 dropped 45087
+t=20s total 112.6MB/s lost 1186916 rss 35.4MB cpu 221% threads 12 fds 45 dropped 65962
+t=25s total 218.5MB/s lost 1327613 rss 35.8MB cpu 346% threads 12 fds 45 dropped 86928
+t=30s total 190.2MB/s lost 1368139 rss 37.3MB cpu 332% threads 12 fds 45 dropped 89684
+t=35s total 163.0MB/s lost 1647359 rss 37.7MB cpu 267% threads 12 fds 45 dropped 115721
+t=40s total 179.5MB/s lost 1901614 rss 38.4MB cpu 304% threads 12 fds 45 dropped 138467
+t=45s total 170.2MB/s lost 2008385 rss 39.4MB cpu 318% threads 12 fds 45 dropped 141681
+t=50s total 160.8MB/s lost 2290504 rss 39.4MB cpu 269% threads 12 fds 45 dropped 180678
