@@ -1,10 +1,10 @@
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 
 use bytes::Bytes;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::drops::DropTally;
@@ -29,6 +29,7 @@ struct Receipt {
     event: Event,
     outlet: Arc<Outlet>,
     completed: AtomicBool,
+    confirmation: Mutex<Option<oneshot::Sender<()>>>,
 }
 
 impl WriteRequest {
@@ -39,8 +40,14 @@ impl WriteRequest {
                 event,
                 outlet,
                 completed: AtomicBool::new(false),
+                confirmation: Mutex::new(None),
             }),
         }
+    }
+
+    pub fn confirming(self, confirmation: Option<oneshot::Sender<()>>) -> Self {
+        *self.receipt.confirmation.lock().unwrap() = confirmation;
+        self
     }
 
     pub fn unavailable(mut self, reason: String) {
@@ -80,6 +87,9 @@ impl WriteRequest {
                 *timestamp = chrono::Utc::now();
             }
             self.receipt.settle(event);
+            if let Some(confirmation) = self.receipt.confirmation.lock().unwrap().take() {
+                let _ = confirmation.send(());
+            }
         }
     }
 }
@@ -137,9 +147,15 @@ impl Drop for Receipt {
     }
 }
 
+pub(crate) struct Inbound {
+    pub bytes: Bytes,
+    pub confirmation: Option<oneshot::Sender<()>>,
+    pub retried: bool,
+}
+
 #[derive(Clone)]
 pub(crate) struct Context {
-    pub reads: mpsc::Sender<Bytes>,
+    pub reads: mpsc::Sender<Inbound>,
     pub states: mpsc::Sender<ConnectionState>,
     pub peers: PeerCounter,
     pub cancel: CancellationToken,
@@ -158,7 +174,30 @@ impl Context {
     }
 
     pub async fn forward(&self, bytes: Bytes) -> bool {
-        self.reads.send(bytes).await.is_ok()
+        let inbound = Inbound {
+            bytes,
+            confirmation: None,
+            retried: false,
+        };
+        self.reads.send(inbound).await.is_ok()
+    }
+
+    pub async fn forward_confirmed(&self, bytes: Bytes) -> Option<oneshot::Receiver<()>> {
+        self.send_confirmed(bytes, false).await
+    }
+
+    pub async fn retry_confirmed(&self, bytes: Bytes) -> Option<oneshot::Receiver<()>> {
+        self.send_confirmed(bytes, true).await
+    }
+
+    async fn send_confirmed(&self, bytes: Bytes, retried: bool) -> Option<oneshot::Receiver<()>> {
+        let (confirmation, confirmed) = oneshot::channel();
+        let inbound = Inbound {
+            bytes,
+            confirmation: Some(confirmation),
+            retried,
+        };
+        self.reads.send(inbound).await.ok().map(|()| confirmed)
     }
 }
 
@@ -267,6 +306,29 @@ mod tests {
         drop(request);
         drop(second_recipient);
         assert!(received.try_recv().is_err());
+    }
+
+    #[test]
+    fn confirmation_resolves_only_after_a_successful_write() {
+        let outlet = Arc::new(Outlet::detached(8));
+        let bytes = Bytes::from_static(b"hello");
+        let request = |confirmation| {
+            let event = Event::data("test", Side::A, Side::B, Origin::Forwarded, &bytes, true);
+            WriteRequest::new(bytes.clone(), event, outlet.clone()).confirming(Some(confirmation))
+        };
+        let (sender, mut written) = oneshot::channel();
+        let delivered = request(sender);
+        let other_recipient = delivered.clone();
+        assert_eq!(written.try_recv(), Err(oneshot::error::TryRecvError::Empty));
+        delivered.delivered();
+        assert_eq!(written.try_recv(), Ok(()));
+        drop(other_recipient);
+        let (sender, mut dropped) = oneshot::channel();
+        drop(request(sender));
+        assert_eq!(
+            dropped.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed)
+        );
     }
 
     #[test]

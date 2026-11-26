@@ -3,11 +3,32 @@ use std::io;
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::sync::mpsc;
 
 use super::backoff::Backoff;
-use super::link::{Context, Link};
+use super::link::{Context, Link, WriteRequest};
 use super::stream::pump;
 use crate::event::ConnectionState;
+
+pub(crate) trait Session {
+    async fn serve(
+        self,
+        context: &Context,
+        writes: &mut mpsc::Receiver<WriteRequest>,
+    ) -> io::Result<()>;
+}
+
+struct ByteSession<S>(S);
+
+impl<S: AsyncRead + AsyncWrite> Session for ByteSession<S> {
+    async fn serve(
+        self,
+        context: &Context,
+        writes: &mut mpsc::Receiver<WriteRequest>,
+    ) -> io::Result<()> {
+        pump(self.0, context, writes).await
+    }
+}
 
 pub(crate) async fn run_client<S, Connect, Connecting>(
     peer: String,
@@ -16,6 +37,22 @@ pub(crate) async fn run_client<S, Connect, Connecting>(
     connect: Connect,
 ) where
     S: AsyncRead + AsyncWrite,
+    Connect: Fn() -> Connecting,
+    Connecting: Future<Output = io::Result<S>>,
+{
+    run_session_client(peer, link, reconnect_delay, || async {
+        connect().await.map(ByteSession)
+    })
+    .await;
+}
+
+pub(crate) async fn run_session_client<S, Connect, Connecting>(
+    peer: String,
+    link: Link,
+    reconnect_delay: Duration,
+    connect: Connect,
+) where
+    S: Session,
     Connect: Fn() -> Connecting,
     Connecting: Future<Output = io::Result<S>>,
 {
@@ -31,13 +68,13 @@ pub(crate) async fn run_client<S, Connect, Connecting>(
             result = connect() => result,
         };
         match connected {
-            Ok(stream) => {
+            Ok(session) => {
                 backoff.reset();
                 context.peers.joined();
                 context
                     .report(ConnectionState::Connected { peer: peer.clone() })
                     .await;
-                let result = pump(stream, &context, &mut writes).await;
+                let result = session.serve(&context, &mut writes).await;
                 context.peers.left();
                 report_end(&context, result).await;
                 while writes.try_recv().is_ok() {}

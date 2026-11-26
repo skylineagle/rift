@@ -242,6 +242,44 @@ b = { kind = "udp-server", bind = "0.0.0.0:2", enabled = false }
     }
 
     #[test]
+    fn websocket_and_rabbitmq_sides_load_from_toml_and_round_trip() {
+        let store: ProfileStore = toml::from_str(
+            r#"
+[[profile]]
+name = "broker"
+a = { kind = "websocket-server", bind = "0.0.0.0:8080", path = "/feed", format = "json", json_value = "json" }
+b = { kind = "rabbitmq", url = "amqp://guest:guest@localhost:5672", exchange = "events", exchange_type = "topic", routing_key = "rift.out", queue = "rift.in", queue_type = "quorum", max_length = 1000 }
+
+[[profile]]
+name = "client"
+a = { kind = "websocket-client", url = "wss://example.com/socket", format = "base64" }
+b = { kind = "tcp-client", address = "h:1" }
+"#,
+        )
+        .unwrap();
+        let broker = store.get("broker").unwrap();
+        assert_eq!(
+            broker.a,
+            "ws-server://0.0.0.0:8080/feed?format=json&json_value=json"
+                .parse()
+                .unwrap()
+        );
+        assert_eq!(
+            broker.b,
+            "amqp://guest:guest@localhost:5672?exchange=events&exchange_type=topic&routing_key=rift.out&queue=rift.in&queue_type=quorum&max_length=1000"
+                .parse()
+                .unwrap()
+        );
+        assert_eq!(
+            store.get("client").unwrap().a,
+            "wss://example.com/socket?format=base64".parse().unwrap()
+        );
+        let reloaded: ProfileStore =
+            toml::from_str(&toml::to_string_pretty(&store).unwrap()).unwrap();
+        assert_eq!(reloaded, store);
+    }
+
+    #[test]
     fn add_and_remove_rules() {
         let mut store: ProfileStore = toml::from_str(EXAMPLE).unwrap();
         let duplicate = store.get("gps").unwrap().clone();

@@ -24,6 +24,11 @@ tokio-util.workspace = true
 toml.workspace = true
 tempfile.workspace = true
 ureq.workspace = true
+amqprs = { version = "2", features = ["tls", "urispec"] }
+async-trait = "0.1"
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+base64 = "0.22"
 
 [dev-dependencies]
 tempfile.workspace = true

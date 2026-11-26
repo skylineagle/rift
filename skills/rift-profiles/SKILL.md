@@ -34,7 +34,7 @@ rift inject <profile> <a|b|both> <text|hex|bin|file> <payload...> [--every 500ms
 
 - `add` creates the file if missing and fails if the name already exists. To change a profile: `remove` then `add`, or edit the TOML.
 - `remove` and `run` fail on unknown names; run `rift profile list` first.
-- Endpoint URIs are the same as `rift pipe` (`tcp://`, `tcp-server://`, `udp://`, `udp-server://`, `uart://`). Quote URIs with `?` or `&`.
+- Endpoint URIs are the same as `rift pipe` (`tcp://`, `tcp-server://`, `udp://`, `udp-server://`, `uart://`, `ws://`, `wss://`, `ws-server://`, `amqp://`, `amqps://`). Quote URIs with `?` or `&`.
 
 ## Examples
 

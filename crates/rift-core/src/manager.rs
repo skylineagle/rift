@@ -221,8 +221,8 @@ impl Rift {
 fn profile_record(event: &str, action: &str, profile: &Profile) -> LogRecord {
     LogRecord::info(event, format!("{} {action}", profile.name))
         .profile(&profile.name)
-        .field("a", profile.a.endpoint.to_string())
-        .field("b", profile.b.endpoint.to_string())
+        .field("a", profile.a.endpoint.redacted())
+        .field("b", profile.b.endpoint.redacted())
         .field("a_enabled", profile.a.enabled)
         .field("b_enabled", profile.b.enabled)
 }
@@ -241,7 +241,7 @@ fn side_record(profile: &mut Profile, side: Side) -> LogRecord {
     } else {
         ("side.disabled", "disabled")
     };
-    let endpoint = config.endpoint.to_string();
+    let endpoint = config.endpoint.redacted();
     LogRecord::info(event, format!("{} {side} {action}", profile.name))
         .profile(&profile.name)
         .side(side)
@@ -312,6 +312,43 @@ b = { kind = "tcp-server", bind = "127.0.0.1:0", enabled = false }
         ));
         assert_eq!(rift.traffic()["gps"].a.injected_bytes, 0);
         rift.stop_all().await;
+    }
+
+    #[tokio::test]
+    async fn lifecycle_logs_never_contain_endpoint_credentials() {
+        let directory = tempfile::tempdir().unwrap();
+        let logger = Logger::new(LoggingConfig {
+            file: FileSinkConfig {
+                enabled: true,
+                directory: Some(directory.path().to_path_buf()),
+                ..FileSinkConfig::default()
+            },
+            ..LoggingConfig::default()
+        });
+        let rift = Rift::with_logger(logger);
+        let profile = Profile {
+            name: "secrets".into(),
+            a: "amqp://user:hunter2@127.0.0.1:1?enabled=false"
+                .parse()
+                .unwrap(),
+            b: "ws://user:hunter2@127.0.0.1:1/feed?token=hunter2&enabled=false"
+                .parse()
+                .unwrap(),
+            workflows: Vec::new(),
+        };
+        rift.start(profile).unwrap();
+        rift.set_side_enabled("secrets", Side::A, false)
+            .await
+            .unwrap();
+        rift.set_side_enabled("secrets", Side::B, false)
+            .await
+            .unwrap();
+        rift.stop_all().await;
+        rift.logger().flush();
+        let written = fs::read_to_string(directory.path().join("rift.log")).unwrap();
+        assert!(written.contains("amqp://127.0.0.1:1"));
+        assert!(written.contains("ws://127.0.0.1:1/feed"));
+        assert!(!written.contains("hunter2"), "{written}");
     }
 
     #[tokio::test]

@@ -4,7 +4,7 @@
 
 <h1 align="center">rift</h1>
 
-<p align="center">Bridge TCP, UDP and serial (UART) endpoints. Pipe bytes between any two sides, inspect traffic, inject data live.</p>
+<p align="center">Bridge TCP, UDP, WebSocket, RabbitMQ and serial (UART) endpoints. Pipe bytes between any two sides, inspect traffic, inject data live.</p>
 
 Created in [T3 Code](https://t3.codes).
 
@@ -80,6 +80,12 @@ rift pipe "tcp-server://0.0.0.0:9000?max_clients=1" "tcp://192.168.1.20:4000?rec
 # Log as JSON lines for piping into jq or a log collector
 rift run --all --log json | jq .
 
+# Broadcast a serial device to WebSocket clients as {"data":"<base64>"}
+rift pipe "ws-server://0.0.0.0:8080/feed?format=json&json_value=base64" "uart:///dev/ttyUSB0?baud=115200"
+
+# Consume a RabbitMQ quorum queue bound to a topic exchange, publish replies back
+rift pipe "amqp://guest:guest@localhost:5672?exchange=events&exchange_type=topic&declare_exchange=true&queue=rift.in&queue_type=quorum&binding_key=sensor.#&routing_key=rift.out" tcp-server://0.0.0.0:9000
+
 # Start a side disabled, enable it later from stdin with `b on`
 rift pipe tcp-server://0.0.0.0:9000 "tcp://example.com:7000?enabled=false"
 ```
@@ -100,6 +106,9 @@ plus multi-profile setups in [`examples/combos/`](examples/combos):
 | `tcp-server-to-udp-client` | TCP-only tools reaching a UDP service |
 | `udp-client-to-udp-server` | UDP relay with peer timeout |
 | `uart-to-uart` | Baud-rate adapter between two serial ports |
+| `websocket-server-to-uart` | Serial device broadcast to browsers as JSON |
+| `websocket-client-to-tcp-server` | Remote WebSocket feed exposed as a local TCP port |
+| `rabbitmq-to-tcp-client` | Queue consumer with publishing back to an exchange |
 | `combos/sensor-gateway` | GPS, modem and IMU each on their own port |
 | `combos/cloud-uplink` | Primary uplink plus a disabled backup you switch on live |
 | `combos/protocol-translator` | One service reachable over TCP, UDP and serial |
@@ -118,7 +127,9 @@ nc localhost 9000              # type here, it shows up for UDP peers on :5000
 ```
 
 Endpoint URIs: `tcp://host:port`, `tcp-server://0.0.0.0:9000`, `udp://host:port[?bind=0.0.0.0:7000]`,
-`udp-server://0.0.0.0:5000`, `uart:///dev/ttyUSB0?baud=115200&parity=even&data_bits=8&stop_bits=1&flow=none`.
+`udp-server://0.0.0.0:5000`, `uart:///dev/ttyUSB0?baud=115200&parity=even&data_bits=8&stop_bits=1&flow=none`,
+`ws://host:port/path` / `wss://...` (query params Rift does not know stay in the URL), `ws-server://0.0.0.0:8080[/path]`,
+`amqp://user:pass@host:5672/vhost` / `amqps://...`. Leave the vhost off for `/`; `#` in topic keys is written as-is.
 
 Endpoint options (URI query params, same names as the TOML keys; omitted means default):
 
@@ -132,6 +143,27 @@ Endpoint options (URI query params, same names as the TOML keys; omitted means d
 | `udp` | `bind` | auto | Local address to bind |
 | `udp-server` | `reply_to` | `all` | `all` or `last`: which peers receive data written to this side |
 | `udp-server` | `peer_timeout_secs` | none | Forget peers silent for this long and emit a disconnected status |
+| `ws`/`wss` | `format` | `binary` | How bytes travel: `binary` frames, `text` (UTF-8), `base64` or `hex` text, or `json` envelope |
+| `ws`/`wss` | `json_field` | `data` | `format=json` only: field holding the data, dot path for nesting (`msg.raw`) |
+| `ws`/`wss` | `json_value` | `text` | `format=json` only: `text`, `base64`, `hex` string, or `json` to embed/extract the data as a JSON value |
+| `ws`/`wss` | `reconnect_delay_ms` | `1000` | Initial reconnect delay, same backoff as `tcp` |
+| `ws`/`wss` | `connect_timeout_ms` | `5000` | Give up a connection attempt after this long |
+| `ws-server` | `format`, `json_field`, `json_value` | as `ws` | Same message format options, applied to every client |
+| `ws-server` | `max_clients` | unlimited | Data written to this side is broadcast to all clients |
+| `amqp`/`amqps` | `exchange` | default exchange | Exchange to publish to (and to bind the queue to) |
+| `amqp`/`amqps` | `exchange_type` | `direct` | `direct`, `fanout`, `topic`, `headers` (used when creating it) |
+| `amqp`/`amqps` | `declare_exchange` | `false` | Create the exchange if missing |
+| `amqp`/`amqps` | `routing_key` | empty | Publish routing key; with no exchange and no key the side only consumes |
+| `amqp`/`amqps` | `queue` | none | Queue to consume from; empty value asks the broker for a server-named queue |
+| `amqp`/`amqps` | `declare_queue` | `true` | Create the queue; `false` only checks it exists |
+| `amqp`/`amqps` | `queue_type` | `classic` | `classic`, `quorum`, `stream` |
+| `amqp`/`amqps` | `durable` / `exclusive` / `auto_delete` | `true` / `false` / `false` | Queue (and created exchange) flags |
+| `amqp`/`amqps` | `binding_key` | `routing_key` | Key binding the queue to `exchange` |
+| `amqp`/`amqps` | `message_ttl_ms`, `expires_ms`, `max_length`, `max_length_bytes`, `max_priority` | none | Queue arguments (`x-message-ttl`, ...) |
+| `amqp`/`amqps` | `dead_letter_exchange`, `dead_letter_routing_key` | none | Dead lettering |
+| `amqp`/`amqps` | `prefetch` | `50` | Unacked deliveries in flight; each is acked after it is forwarded |
+| `amqp`/`amqps` | `persistent` / `content_type` | `false` / none | Published message properties |
+| `amqp`/`amqps` | `reconnect_delay_ms`, `connect_timeout_ms` | `1000`, `5000` | Reconnect behaviour |
 | any | `enabled` | `true` | `false` leaves the side closed; data heading to it is dropped and it reports `disabled` |
 
 Flags for `run`/`pipe`: `--log text|hex|json` (default hex), `--quiet`.
