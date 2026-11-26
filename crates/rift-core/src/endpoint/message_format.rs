@@ -54,7 +54,7 @@ impl MessageFormat {
     pub(crate) fn encode(&self, bytes: &[u8]) -> Result<Message, String> {
         Ok(match self.format {
             WireFormat::Binary => Message::Binary(Bytes::copy_from_slice(bytes)),
-            WireFormat::Text => Message::text(String::from_utf8_lossy(bytes).into_owned()),
+            WireFormat::Text => Message::text(utf8_data(bytes)?),
             WireFormat::Base64 => Message::text(BASE64.encode(bytes)),
             WireFormat::Hex => Message::text(encode_hex(bytes)),
             WireFormat::Json => Message::text(self.wrap_json(bytes)?.to_string()),
@@ -78,7 +78,7 @@ impl MessageFormat {
 
     fn wrap_json(&self, bytes: &[u8]) -> Result<Value, String> {
         let value = match self.json_value {
-            JsonValue::Text => Value::String(String::from_utf8_lossy(bytes).into_owned()),
+            JsonValue::Text => Value::String(utf8_data(bytes)?.to_string()),
             JsonValue::Base64 => Value::String(BASE64.encode(bytes)),
             JsonValue::Hex => Value::String(encode_hex(bytes)),
             JsonValue::Json => serde_json::from_slice(bytes)
@@ -114,6 +114,10 @@ fn nest<'a>(path: impl Iterator<Item = &'a str>, value: Value) -> Value {
     keys.into_iter().rev().fold(value, |inner, key| {
         Value::Object(Map::from_iter([(key.to_string(), inner)]))
     })
+}
+
+fn utf8_data(bytes: &[u8]) -> Result<&str, String> {
+    std::str::from_utf8(bytes).map_err(|error| format!("data is not valid UTF-8: {error}"))
 }
 
 fn trimmed(raw: &[u8]) -> Result<&str, String> {
@@ -200,6 +204,19 @@ mod tests {
         }
         let text = format(WireFormat::Text, "data", JsonValue::Text);
         assert_eq!(text.encode(b"hi").unwrap(), Message::text("hi"));
+    }
+
+    #[test]
+    fn text_modes_reject_invalid_utf8() {
+        for codec in [
+            format(WireFormat::Text, "data", JsonValue::Text),
+            format(WireFormat::Json, "data", JsonValue::Text),
+        ] {
+            for bytes in [&b"\xff"[..], &"é".as_bytes()[..1]] {
+                assert!(codec.encode(bytes).unwrap_err().contains("UTF-8"));
+            }
+            assert_eq!(round_trip(&codec, "héllo".as_bytes()), "héllo".as_bytes());
+        }
     }
 
     #[test]

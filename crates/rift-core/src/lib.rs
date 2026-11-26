@@ -13,6 +13,7 @@ mod outlet;
 mod payload;
 mod peers;
 mod profile;
+mod redact;
 mod serial;
 mod side;
 mod side_config;

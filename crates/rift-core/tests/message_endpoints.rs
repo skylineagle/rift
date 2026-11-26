@@ -50,6 +50,10 @@ fn is_connected(state: &ConnectionState) -> bool {
     matches!(state, ConnectionState::Connected { .. })
 }
 
+fn is_handshake_timeout(state: &ConnectionState) -> bool {
+    matches!(state, ConnectionState::Error { message } if message.contains("timed out"))
+}
+
 async fn read_exact(stream: &mut TcpStream, length: usize) -> Vec<u8> {
     let mut buffer = vec![0u8; length];
     timeout(WAIT, stream.read_exact(&mut buffer))
@@ -118,6 +122,29 @@ async fn websocket_server_broadcasts_json_wrapped_base64() {
             .unwrap();
         assert_eq!(message, Message::text(r#"{"msg":{"raw":"AP8="}}"#));
     }
+    rift.stop("test").await.unwrap();
+}
+
+#[tokio::test]
+async fn websocket_server_reserves_a_slot_until_the_handshake_times_out() {
+    let ws_port = free_port();
+    let tcp_port = free_port();
+    let rift = Rift::new();
+    let mut events = rift.subscribe();
+    start(
+        &rift,
+        format!("ws-server://127.0.0.1:{ws_port}?max_clients=1"),
+        tcp_port,
+    );
+    wait_for_state(&mut events, Side::A, is_listening).await;
+    let url = format!("ws://127.0.0.1:{ws_port}/");
+
+    let _silent = TcpStream::connect(("127.0.0.1", ws_port)).await.unwrap();
+    assert!(tokio_tungstenite::connect_async(&url).await.is_err());
+
+    wait_for_state(&mut events, Side::A, is_handshake_timeout).await;
+    tokio_tungstenite::connect_async(&url).await.unwrap();
+    wait_for_state(&mut events, Side::A, is_connected).await;
     rift.stop("test").await.unwrap();
 }
 

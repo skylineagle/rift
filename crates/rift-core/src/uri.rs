@@ -6,30 +6,36 @@ use crate::endpoint::{
     UdpClientConfig, UdpServerConfig, WebSocketClientConfig, WebSocketServerConfig,
 };
 use crate::error::{Error, Result};
+use crate::redact::redact_url;
 use crate::side_config::SideConfig;
 
 fn invalid(message: impl Into<String>) -> Error {
     Error::InvalidUri(message.into())
 }
 
-struct Options(Vec<(String, String)>);
+struct Options(Vec<String>);
 
 impl Options {
-    fn parse(query: &str) -> Result<Self> {
-        let mut options = Vec::new();
-        for pair in query.split('&').filter(|pair| !pair.is_empty()) {
-            let (key, value) = pair
-                .split_once('=')
-                .ok_or_else(|| invalid(format!("option `{pair}` needs a value")))?;
-            options.retain(|(existing, _): &(String, String)| existing != key);
-            options.push((key.to_string(), value.to_string()));
-        }
-        Ok(Self(options))
+    fn parse(query: &str) -> Self {
+        Self(
+            query
+                .split('&')
+                .filter(|segment| !segment.is_empty())
+                .map(str::to_string)
+                .collect(),
+        )
     }
 
     fn take(&mut self, key: &str) -> Option<String> {
-        let index = self.0.iter().position(|(existing, _)| existing == key)?;
-        Some(self.0.remove(index).1)
+        let mut last = None;
+        self.0.retain(|segment| match segment.split_once('=') {
+            Some((existing, value)) if existing == key => {
+                last = Some(value.to_string());
+                false
+            }
+            _ => true,
+        });
+        last
     }
 
     fn take_text(&mut self, key: &str, default: &str) -> String {
@@ -37,11 +43,7 @@ impl Options {
     }
 
     fn drain_query(&mut self) -> String {
-        std::mem::take(&mut self.0)
-            .into_iter()
-            .map(|(key, value)| format!("{key}={value}"))
-            .collect::<Vec<_>>()
-            .join("&")
+        std::mem::take(&mut self.0).join("&")
     }
 
     fn take_parsed<T: FromStr>(&mut self, key: &str, default: T) -> Result<T> {
@@ -64,10 +66,13 @@ impl Options {
     }
 
     fn finish(self) -> Result<()> {
-        match self.0.into_iter().next() {
-            Some((key, _)) => Err(invalid(format!("unknown option `{key}`"))),
-            None => Ok(()),
-        }
+        let Some(segment) = self.0.first() else {
+            return Ok(());
+        };
+        Err(invalid(match segment.split_once('=') {
+            Some((key, _)) => format!("unknown option `{key}`"),
+            None => format!("option `{segment}` needs a value"),
+        }))
     }
 }
 
@@ -168,8 +173,7 @@ fn parse_websocket_client(
 fn parse_websocket_server(location: &str, options: &mut Options) -> Result<WebSocketServerConfig> {
     let location = require_location(location)?;
     let (bind, path) = match location.split_once('/') {
-        Some((bind, path)) if !path.is_empty() => (bind.to_string(), Some(format!("/{path}"))),
-        Some((bind, _)) => (bind.to_string(), None),
+        Some((bind, path)) => (bind.to_string(), Some(format!("/{path}"))),
         None => (location, None),
     };
     Ok(WebSocketServerConfig {
@@ -217,7 +221,7 @@ fn split_uri(input: &str) -> Result<(&str, &str, Options)> {
         .split_once("://")
         .ok_or_else(|| invalid(format!("`{input}` is missing a scheme")))?;
     let (location, query) = rest.split_once('?').unwrap_or((rest, ""));
-    Ok((scheme, location, Options::parse(query)?))
+    Ok((scheme, location, Options::parse(query)))
 }
 
 fn build_endpoint(scheme: &str, location: &str, options: &mut Options) -> Result<Endpoint> {
@@ -367,6 +371,18 @@ impl fmt::Display for Query {
     }
 }
 
+impl Endpoint {
+    pub fn redacted(&self) -> String {
+        let mut endpoint = self.clone();
+        match &mut endpoint {
+            Endpoint::WebsocketClient(config) => config.url = redact_url(&config.url),
+            Endpoint::Rabbitmq(config) => config.url = redact_url(&config.url),
+            _ => {}
+        }
+        endpoint.to_string()
+    }
+}
+
 impl fmt::Display for Endpoint {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -465,6 +481,8 @@ mod tests {
             "wss://example.com/socket?token=abc&format=json&json_field=payload.raw&json_value=base64",
             "ws://h:1?reconnect_delay_ms=250&format=hex",
             "ws-server://0.0.0.0:8080",
+            "ws-server://0.0.0.0:8080/",
+            "wss://example.com/feed?topic=a&topic=b&flag&format=hex",
             "ws-server://0.0.0.0:8080/feed?max_clients=4&format=json&json_value=json",
             "amqp://guest:guest@localhost:5672/vhost",
             "amqps://u:p@broker/vh?exchange=events&exchange_type=topic&declare_exchange=true&routing_key=a.b&queue=q1&queue_type=quorum&binding_key=a.*&message_ttl_ms=1000&max_length=10&dead_letter_exchange=dlx&prefetch=5&persistent=true&content_type=application/json",
@@ -544,6 +562,43 @@ mod tests {
         };
         assert_eq!(server.bind, "0.0.0.0:1");
         assert_eq!(server.path.as_deref(), Some("/feed"));
+    }
+
+    #[test]
+    fn websocket_client_keeps_repeated_upstream_parameters() {
+        let Endpoint::WebsocketClient(client) =
+            "wss://h/feed?topic=a&format=hex&topic=b&flag&format=base64"
+                .parse()
+                .unwrap()
+        else {
+            panic!("expected websocket client");
+        };
+        assert_eq!(client.url, "wss://h/feed?topic=a&topic=b&flag");
+        assert_eq!(client.message.format, crate::endpoint::WireFormat::Base64);
+    }
+
+    #[test]
+    fn websocket_server_root_path_stays_restricted() {
+        let Endpoint::WebsocketServer(server) = "ws-server://h:1/".parse().unwrap() else {
+            panic!("expected websocket server");
+        };
+        assert_eq!(server.path.as_deref(), Some("/"));
+        let Endpoint::WebsocketServer(open) = "ws-server://h:1".parse().unwrap() else {
+            panic!("expected websocket server");
+        };
+        assert_eq!(open.path, None);
+    }
+
+    #[test]
+    fn redacted_endpoints_hide_secrets_and_keep_rift_options() {
+        let broker: Endpoint = "amqp://user:secret@broker/vh?queue=q".parse().unwrap();
+        assert_eq!(broker.redacted(), "amqp://broker/vh?queue=q");
+        let socket: Endpoint = "wss://user:secret@h/feed?token=secret&format=hex"
+            .parse()
+            .unwrap();
+        assert_eq!(socket.redacted(), "wss://h/feed?format=hex");
+        let tcp: Endpoint = "tcp://h:1".parse().unwrap();
+        assert_eq!(tcp.redacted(), "tcp://h:1");
     }
 
     #[test]

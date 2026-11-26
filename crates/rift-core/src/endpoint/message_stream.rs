@@ -44,7 +44,10 @@ where
                         sender.send(message).await.map_err(to_io)?;
                         request.delivered();
                     }
-                    Err(reason) => context.report_error(reason).await,
+                    Err(reason) => {
+                        context.report_error(&reason).await;
+                        request.unavailable(reason);
+                    }
                 },
                 None => return Ok(()),
             },

@@ -16,6 +16,7 @@ use super::client_session::{run_session_client, Session};
 use super::link::{Context, Link, WriteRequest};
 use super::message_format::text_enum;
 use super::tcp_client::{default_connect_timeout_ms, default_reconnect_delay_ms};
+use crate::redact::redact_url;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -139,10 +140,10 @@ impl RabbitMqConfig {
     }
 
     pub fn display_target(&self) -> String {
-        let host = self
-            .url
-            .split_once('@')
-            .map_or(self.url.as_str(), |(_, host)| host);
+        let redacted = redact_url(&self.url);
+        let host = redacted
+            .split_once("://")
+            .map_or(redacted.as_str(), |(_, host)| host);
         match &self.queue {
             Some(queue) if !queue.is_empty() => format!("{host} · {queue}"),
             _ if !self.exchange.is_empty() => format!("{host} · {}", self.exchange),

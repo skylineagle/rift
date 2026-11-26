@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
+use tokio_tungstenite::tungstenite::http::Uri;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
 use super::client_session::{run_session_client, Session};
@@ -52,10 +53,28 @@ impl Session for WebSocketSession<'_> {
 
 pub(crate) async fn run(config: WebSocketClientConfig, link: Link) {
     let reconnect_delay = Duration::from_millis(config.reconnect_delay_ms);
-    run_session_client(config.url.clone(), link, reconnect_delay, || {
+    run_session_client(peer_label(&config.url), link, reconnect_delay, || {
         connect(&config)
     })
     .await;
+}
+
+fn peer_label(url: &str) -> String {
+    host_and_port(url).unwrap_or_else(|| "websocket server".to_string())
+}
+
+fn host_and_port(url: &str) -> Option<String> {
+    let uri: Uri = url.parse().ok()?;
+    let default_port = if uri.scheme_str() == Some("wss") {
+        443
+    } else {
+        80
+    };
+    Some(format!(
+        "{}:{}",
+        uri.host()?,
+        uri.port_u16().unwrap_or(default_port)
+    ))
 }
 
 async fn connect(config: &WebSocketClientConfig) -> io::Result<WebSocketSession<'_>> {
@@ -71,4 +90,20 @@ async fn connect(config: &WebSocketClientConfig) -> io::Result<WebSocketSession<
         socket,
         message: &config.message,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peer_label_is_only_host_and_port() {
+        assert_eq!(
+            peer_label("wss://user:secret@example.com/feed?token=secret"),
+            "example.com:443"
+        );
+        assert_eq!(peer_label("ws://[::1]:8080/secret"), "[::1]:8080");
+        assert_eq!(peer_label("ws://h/feed"), "h:80");
+        assert_eq!(peer_label("not a url secret"), "websocket server");
+    }
 }

@@ -1,11 +1,16 @@
+use std::io;
+use std::sync::Arc;
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::broadcast;
-use tokio_tungstenite::accept_hdr_async;
+use tokio::sync::{broadcast, OwnedSemaphorePermit, Semaphore};
+use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::handshake::server::{
     Callback, ErrorResponse, Request, Response,
 };
 use tokio_tungstenite::tungstenite::http::StatusCode;
+use tokio_tungstenite::{accept_hdr_async, WebSocketStream};
 
 use super::link::{Context, Link, PeerWrites, WriteRequest};
 use super::message_format::MessageFormat;
@@ -13,6 +18,7 @@ use super::message_stream::{pump_messages, to_io};
 use crate::event::ConnectionState;
 
 const BROADCAST_CAPACITY: usize = 256;
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WebSocketServerConfig {
@@ -35,9 +41,9 @@ impl WebSocketServerConfig {
         }
     }
 
-    fn is_full(&self, context: &Context) -> bool {
-        self.max_clients
-            .is_some_and(|limit| context.peers.count() >= limit)
+    fn client_slots(&self) -> Arc<Semaphore> {
+        let limit = self.max_clients.unwrap_or(Semaphore::MAX_PERMITS);
+        Arc::new(Semaphore::new(limit.min(Semaphore::MAX_PERMITS)))
     }
 
     fn accepts_path(&self, path: &str) -> bool {
@@ -71,24 +77,25 @@ pub(crate) async fn run(config: WebSocketServerConfig, link: Link) {
     };
     context.report(ConnectionState::Listening).await;
     let (broadcaster, _) = broadcast::channel::<WriteRequest>(BROADCAST_CAPACITY);
+    let slots = config.client_slots();
     loop {
         tokio::select! {
             _ = context.cancel.cancelled() => return,
             accepted = listener.accept() => match accepted {
-                Ok((stream, peer)) if config.is_full(&context) => {
-                    context.report_error(format!("max clients reached, rejected {peer}")).await;
-                    drop(stream);
-                }
-                Ok((stream, peer)) => {
-                    let _ = stream.set_nodelay(true);
-                    tokio::spawn(serve_client(
-                        stream,
-                        peer.to_string(),
-                        config.clone(),
-                        context.clone(),
-                        broadcaster.subscribe(),
-                    ));
-                }
+                Ok((stream, peer)) => match slots.clone().try_acquire_owned() {
+                    Ok(slot) => {
+                        let _ = stream.set_nodelay(true);
+                        tokio::spawn(serve_client(
+                            stream,
+                            peer.to_string(),
+                            slot,
+                            config.clone(),
+                            context.clone(),
+                            broadcaster.subscribe(),
+                        ));
+                    }
+                    Err(_) => context.report_error(format!("max clients reached, rejected {peer}")).await,
+                },
                 Err(error) => context.report_error(error).await,
             },
             outgoing = writes.recv() => match outgoing {
@@ -104,16 +111,22 @@ pub(crate) async fn run(config: WebSocketServerConfig, link: Link) {
 async fn serve_client(
     stream: TcpStream,
     peer: String,
+    slot: OwnedSemaphorePermit,
     config: WebSocketServerConfig,
     context: Context,
     writes: broadcast::Receiver<WriteRequest>,
 ) {
-    let socket = match accept_hdr_async(stream, PathCheck(&config)).await {
+    let accepted = tokio::select! {
+        _ = context.cancel.cancelled() => return,
+        accepted = handshake(stream, &config) => accepted,
+    };
+    let socket = match accepted {
         Ok(socket) => socket,
         Err(error) => {
+            drop(slot);
             return context
-                .report_error(format!("handshake with {peer} failed: {}", to_io(error)))
-                .await
+                .report_error(format!("handshake with {peer} failed: {error}"))
+                .await;
         }
     };
     let mut writes = PeerWrites::new(writes, peer.clone());
@@ -123,6 +136,7 @@ async fn serve_client(
         .await;
     let result = pump_messages(socket, &config.message, &context, &mut writes).await;
     context.peers.left();
+    drop(slot);
     if let Err(error) = result {
         context.report_error(error).await;
     }
@@ -132,4 +146,17 @@ async fn serve_client(
     if !context.peers.is_connected() && !context.cancel.is_cancelled() {
         context.report(ConnectionState::Listening).await;
     }
+}
+
+async fn handshake(
+    stream: TcpStream,
+    config: &WebSocketServerConfig,
+) -> io::Result<WebSocketStream<TcpStream>> {
+    timeout(
+        HANDSHAKE_TIMEOUT,
+        accept_hdr_async(stream, PathCheck(config)),
+    )
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "timed out"))?
+    .map_err(to_io)
 }
