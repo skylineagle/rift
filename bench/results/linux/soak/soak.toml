@@ -1,0 +1,24 @@
+[[profile]]
+name = "tcp"
+a = { kind = "tcp-server", bind = "127.0.0.1:31000" }
+b = { kind = "tcp-client", address = "127.0.0.1:31001", reconnect_delay_ms = 100 }
+
+[[profile]]
+name = "udp"
+a = { kind = "udp-server", bind = "127.0.0.1:31002" }
+b = { kind = "udp-client", remote = "127.0.0.1:31003", bind = "127.0.0.1:31004" }
+
+[[profile]]
+name = "udp-tcp"
+a = { kind = "udp-server", bind = "127.0.0.1:31005" }
+b = { kind = "tcp-client", address = "127.0.0.1:31006", reconnect_delay_ms = 100 }
+
+[[profile]]
+name = "serial"
+a = { kind = "uart", port = "/dev/pts/0", baud_rate = 115200 }
+b = { kind = "tcp-server", bind = "127.0.0.1:31007" }
+
+[[profile]]
+name = "churn"
+a = { kind = "tcp-server", bind = "127.0.0.1:31008" }
+b = { kind = "tcp-client", address = "127.0.0.1:31009", reconnect_delay_ms = 100 }

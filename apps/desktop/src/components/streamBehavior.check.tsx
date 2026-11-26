@@ -4,7 +4,7 @@ const browser = new Window();
 Object.assign(globalThis, { window: browser, getComputedStyle: browser.getComputedStyle.bind(browser), document: browser.document, navigator: browser.navigator, HTMLElement: browser.HTMLElement, HTMLFormElement: browser.HTMLFormElement, DocumentFragment: browser.DocumentFragment, Event: browser.Event, CustomEvent: browser.CustomEvent, ResizeObserver: browser.ResizeObserver, IS_REACT_ACT_ENVIRONMENT: true });
 const inject = mock(async (..._args: unknown[]) => undefined);
 mock.module("@tauri-apps/api/core", () => ({ invoke: async () => undefined, Channel: class {} }));
-mock.module("@/lib/tauriApi", () => ({ inject, previewPayload: async () => [65], bridgeStatus: async () => [], exportLog: async () => undefined }));
+mock.module("@/lib/tauriApi", () => ({ inject, runningWorkflows: async () => [], previewPayload: async () => [65], bridgeStatus: async () => [], exportLog: async () => undefined }));
 mock.module("@tauri-apps/plugin-dialog", () => ({ open: async () => "/tmp/payload.bin", save: async () => null }));
 const { act } = await import("react");
 const { createRoot } = await import("react-dom/client");

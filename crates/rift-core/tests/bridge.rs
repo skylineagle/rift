@@ -1,7 +1,11 @@
 use std::net::{TcpListener, UdpSocket as StdUdpSocket};
+use std::sync::Arc;
 use std::time::Duration;
 
-use rift_core::{ConnectionState, Event, Origin, Profile, Rift, Side, Target};
+use rift_core::{
+    ConnectionState, Event, Origin, PayloadFormat, Profile, Rift, Side, Target, Workflow,
+    WorkflowStep, Workflows,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::broadcast::Receiver;
@@ -70,6 +74,7 @@ async fn bridges_tcp_server_and_udp_server_both_ways() {
         b: format!("udp-server://127.0.0.1:{udp_port}")
             .parse()
             .unwrap(),
+        workflows: Vec::new(),
     })
     .unwrap();
 
@@ -153,6 +158,7 @@ async fn logs_received_data_when_opposite_side_has_no_peers() {
         b: format!("udp-server://127.0.0.1:{udp_port}")
             .parse()
             .unwrap(),
+        workflows: Vec::new(),
     })
     .unwrap();
     wait_for(&mut events, |event| {
@@ -188,6 +194,7 @@ async fn start_pair(name: &str, a: String, b: String) -> (Rift, Receiver<Event>)
         name: name.into(),
         a: a.parse().unwrap(),
         b: b.parse().unwrap(),
+        workflows: Vec::new(),
     })
     .unwrap();
     (rift, events)
@@ -816,4 +823,37 @@ async fn injecting_into_paused_or_disabled_sides_explains_unavailability_without
         assert!(events.try_recv().is_err());
         rift.stop_all().await;
     }
+}
+
+#[tokio::test]
+async fn autostarted_workflow_waits_for_its_target_side_to_connect() {
+    let port = free_tcp_port();
+    let profile = Profile {
+        name: "autostart".into(),
+        a: format!("tcp-server://127.0.0.1:{port}").parse().unwrap(),
+        b: format!("tcp-server://127.0.0.1:{}?enabled=false", free_tcp_port())
+            .parse()
+            .unwrap(),
+        workflows: vec![Workflow {
+            name: "hello".into(),
+            autostart: true,
+            repeat: Some(1),
+            steps: vec![WorkflowStep::Send {
+                target: Target::A,
+                format: PayloadFormat::Text,
+                payload: "hello".into(),
+            }],
+        }],
+    };
+    let rift = Arc::new(Rift::new());
+    let mut events = rift.subscribe();
+    let workflows = Workflows::new(rift.clone());
+    rift.start(profile.clone()).unwrap();
+    assert!(workflows.start_autostart(&profile).is_empty());
+    wait_listening(&mut events, Side::A).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(workflows.running().len(), 1);
+    let mut client = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    assert_eq!(read_exact(&mut client, 5).await, b"hello");
+    rift.stop_all().await;
 }

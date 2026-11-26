@@ -25,6 +25,11 @@ rift profile add <name> <a-uri> <b-uri> [-c file]
 rift profile remove <name> [-c file]
 rift run <name>... [-c file] [--log text|hex|json] [--quiet]
 rift run --all [-c file]
+rift workflow list [-c file]                   # profile  workflow  autostart  repeat  steps
+rift workflow start <profile> <workflow>       # needs a running instance
+rift workflow stop <profile> <workflow>
+rift workflow status                           # running instances, profiles and workflows
+rift inject <profile> <a|b|both> <text|hex|bin|file> <payload...> [--every 500ms [--count N]]
 ```
 
 - `add` creates the file if missing and fails if the name already exists. To change a profile: `remove` then `add`, or edit the TOML.
@@ -66,6 +71,8 @@ kill $RIFT_PID
 ```
 
 Live stdin commands target a profile by name: `gps:a hex de ad`, `backup:a on`, `uplink:b off`, `gps:both text hi\r\n`. Payload kinds: `text`, `hex`, `bin`, `file`.
+
+`rift inject` and `rift workflow start|stop|status` reach any Rift running on the same machine (CLI or desktop app) from another shell, so no stdin plumbing is needed. They exit non-zero when nothing is running the profile. `--every` runs as the workflow `cli-inject`; stop it with `rift workflow stop <profile> cli-inject`. Saved workflows with `autostart = true` start with their profile.
 
 ## Workflow
 

@@ -2,11 +2,14 @@ import { invoke } from "@tauri-apps/api/core";
 
 import type {
   BridgeStatus,
+  LoggingConfig,
   PayloadFormat,
   Profile,
   SerialPortInfo,
   SideName,
   Target,
+  Workflow,
+  WorkflowStatus,
 } from "@/lib/types";
 
 export const listProfiles = () => invoke<Profile[]>("list_profiles");
@@ -55,3 +58,21 @@ export const exportLog = (path: string, content: string) =>
 
 export const previewPayload = (format: PayloadFormat, input: string) =>
   invoke<number[]>("preview_payload", { format, input });
+
+export const getLoggingConfig = () => invoke<LoggingConfig>("get_logging_config");
+
+export const saveLoggingConfig = (config: LoggingConfig) =>
+  invoke<void>("save_logging_config", { config });
+
+export const defaultLogDirectory = () => invoke<string>("default_log_directory");
+
+export const startWorkflow = (name: string, workflow: string) =>
+  invoke<void>("start_workflow", { name, workflow });
+
+export const stopWorkflow = (name: string, workflow: string) =>
+  invoke<void>("stop_workflow", { name, workflow });
+
+export const runningWorkflows = () => invoke<WorkflowStatus[]>("running_workflows");
+
+export const validateWorkflow = (workflow: Workflow) =>
+  invoke<void>("validate_workflow", { workflow });

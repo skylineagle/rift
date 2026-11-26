@@ -1,6 +1,10 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use rift_core::{PayloadFormat, Target};
+
+use crate::duration::parse_duration;
 
 #[derive(Parser)]
 #[command(
@@ -17,6 +21,11 @@ pub struct Cli {
 pub enum Command {
     Run(RunArguments),
     Pipe(PipeArguments),
+    Inject(InjectArguments),
+    Workflow {
+        #[command(subcommand)]
+        action: WorkflowAction,
+    },
     Profile {
         #[command(subcommand)]
         action: ProfileAction,
@@ -62,12 +71,46 @@ pub struct RunArguments {
 
 #[derive(Args)]
 pub struct PipeArguments {
+    #[command(flatten)]
+    pub config: ConfigArguments,
     pub a: String,
     pub b: String,
     #[arg(long, default_value = "adhoc")]
     pub name: String,
     #[command(flatten)]
     pub output: OutputArguments,
+}
+
+#[derive(Args)]
+pub struct InjectArguments {
+    pub profile: String,
+    #[arg(value_name = "a|b|both")]
+    pub target: Target,
+    #[arg(value_name = "text|hex|bin|file")]
+    pub format: PayloadFormat,
+    #[arg(required = true)]
+    pub payload: Vec<String>,
+    #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
+    pub every: Option<Duration>,
+    #[arg(long, requires = "every", value_parser = clap::value_parser!(u32).range(1..))]
+    pub count: Option<u32>,
+}
+
+#[derive(Subcommand)]
+pub enum WorkflowAction {
+    List {
+        #[command(flatten)]
+        config: ConfigArguments,
+    },
+    Start {
+        profile: String,
+        name: String,
+    },
+    Stop {
+        profile: String,
+        name: String,
+    },
+    Status,
 }
 
 #[derive(Subcommand)]

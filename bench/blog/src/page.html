@@ -1,0 +1,316 @@
+<title>How Much Can Rift Carry?</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@500;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column with a full-bleed dark "scope" stage where packets flow from side A to side B */
+:root {
+  --bg: #eef2f5;
+  --surface: #ffffff;
+  --fg: #142230;
+  --muted: #566878;
+  --line: #d3dce4;
+  --accent: #0b7d8c;
+  --good: #0f8a6c;
+  --warn: #a8700a;
+  --bad: #c43b2c;
+  --stage: #0c1620;
+  --stage-fg: #dbe8f0;
+  --stage-muted: #7f97a8;
+  --particle: #a9c4d4;
+  --signal-good: #35d1ad;
+  --signal-bad: #ff6a55;
+  --b0: #f3d9d4; --b1: #f4e4c8; --b2: #e3ebd2; --b3: #c9e7da; --b4: #a3dccb;
+  --display: "Schibsted Grotesk", "Helvetica Neue", Arial, sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f151b; --surface: #161f27; --fg: #e3ebf1; --muted: #92a4b2; --line: #26333e; --accent: #4cc3d2;
+    --good: #45cfa8; --warn: #e3ac3f; --bad: #ff7a66; --stage: #070d13;
+    --b0: #4a2621; --b1: #4a3a1c; --b2: #2f3d24; --b3: #1c4236; --b4: #145343;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f151b; --surface: #161f27; --fg: #e3ebf1; --muted: #92a4b2; --line: #26333e; --accent: #4cc3d2;
+  --good: #45cfa8; --warn: #e3ac3f; --bad: #ff7a66; --stage: #070d13;
+  --b0: #4a2621; --b1: #4a3a1c; --b2: #2f3d24; --b3: #1c4236; --b4: #145343;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font: 16px/1.6 var(--body); }
+.wrap { max-width: 980px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.read { max-width: 680px; }
+h1, h2, h3 { font-family: var(--display); text-wrap: balance; letter-spacing: -0.015em; margin: 0; }
+h1 { font-size: clamp(2.4rem, 6vw, 4.2rem); line-height: 1.02; font-weight: 800; }
+h2 { font-size: clamp(1.6rem, 3.4vw, 2.2rem); line-height: 1.1; font-weight: 700; }
+h3 { font-size: 1.15rem; font-weight: 700; }
+p { margin: 0; }
+code { font-family: var(--mono); font-size: 0.9em; }
+.eyebrow { font: 500 0.75rem/1 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); }
+.muted { color: var(--muted); }
+section { padding-block: clamp(40px, 7vw, 72px); }
+section + section { border-top: 1px solid var(--line); }
+.stack { display: grid; gap: 18px; }
+
+.hero { padding-block: clamp(48px, 9vw, 96px) 32px; }
+.hero .lede { font-size: 1.2rem; color: var(--muted); max-width: 640px; }
+.short { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin-top: 12px; }
+.short div { display: grid; gap: 6px; padding: 16px 18px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; min-width: 0; }
+.short b { font-family: var(--display); font-size: 1.05rem; }
+.short span { color: var(--muted); font-size: 0.95rem; }
+
+.scope { background: var(--stage); color: var(--stage-fg); border-radius: 16px; overflow: hidden; }
+.scope-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; padding: 16px 20px; border-bottom: 1px solid #ffffff14; }
+.scope-head .eyebrow { color: var(--signal-good); }
+.toggle { display: inline-flex; border: 1px solid currentColor; border-radius: 999px; padding: 2px; opacity: 0.9; }
+.toggle button { font: 500 0.8rem/1 var(--mono); color: inherit; background: none; border: 0; border-radius: 999px; padding: 7px 12px; cursor: pointer; }
+.toggle button[aria-pressed="true"] { background: currentColor; }
+.toggle button[aria-pressed="true"] span { color: var(--stage); }
+.light-toggle button[aria-pressed="true"] span { color: var(--bg); }
+.stage { position: relative; display: grid; grid-template-columns: minmax(0, 150px) minmax(0, 1fr) minmax(0, 150px); align-items: center; gap: 0; padding: 8px 20px; }
+.side { display: grid; gap: 2px; padding: 12px; border: 1px solid #ffffff24; border-radius: 10px; min-width: 0; }
+.side small { font: 500 0.7rem/1.2 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--stage-muted); }
+.side b { font-family: var(--display); font-size: 1.1rem; }
+.side span { font-size: 0.8rem; color: var(--stage-muted); line-height: 1.3; }
+.pipe { position: relative; height: 200px; min-width: 0; }
+.pipe canvas { width: 100%; height: 100%; display: block; }
+.pipe .gate { position: absolute; left: 50%; bottom: 4px; transform: translateX(-50%); font: 500 0.7rem/1 var(--mono); letter-spacing: 0.12em; color: var(--stage-muted); text-transform: uppercase; }
+.no-gpu .pipe { background: repeating-linear-gradient(90deg, transparent 0 18px, #ffffff10 18px 22px); }
+.no-gpu .pipe::after { content: "Animation needs WebGPU. The numbers below are the same."; position: absolute; inset: 0; display: grid; place-items: center; font-size: 0.85rem; color: var(--stage-muted); text-align: center; padding: 12px; }
+.controls { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 12px; align-items: end; padding: 12px 20px; }
+.controls label { display: grid; gap: 6px; font: 500 0.72rem/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--stage-muted); min-width: 0; }
+select { width: 100%; font: 0.92rem var(--body); color: var(--stage-fg); background: #ffffff0d; border: 1px solid #ffffff2e; border-radius: 8px; padding: 9px 10px; }
+select option { color: #142230; background: #fff; }
+.swap { font: 600 1.1rem/1 var(--body); color: var(--stage-fg); background: #ffffff12; border: 1px solid #ffffff2e; border-radius: 8px; padding: 9px 14px; cursor: pointer; }
+.swap:hover, .toggle button:hover { background-color: #ffffff1f; }
+.rate { display: grid; gap: 8px; padding: 4px 20px 16px; }
+.rate-row { display: flex; justify-content: space-between; gap: 12px; font: 500 0.72rem/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--stage-muted); }
+input[type="range"] { width: 100%; accent-color: var(--signal-good); }
+.readout { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, 1.6fr); gap: 1px; background: #ffffff14; border-top: 1px solid #ffffff14; }
+.readout > div { background: var(--stage); padding: 14px 20px; display: grid; gap: 4px; min-width: 0; }
+.readout small { font: 500 0.7rem/1 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--stage-muted); }
+.readout b { font: 500 1.35rem/1.1 var(--mono); font-variant-numeric: tabular-nums; }
+.verdict { justify-self: start; font: 600 0.8rem/1 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; padding: 6px 10px; border-radius: 999px; color: var(--stage); background: var(--signal-good); }
+.verdict[data-verdict="leaking"] { background: #f2b545; }
+.verdict[data-verdict="overloaded"] { background: var(--signal-bad); }
+#verdict-text { font-size: 0.9rem; color: var(--stage-fg); }
+.chart { padding: 12px 12px 8px; border-top: 1px solid #ffffff14; overflow-x: auto; }
+.chart svg { width: 100%; min-width: 520px; height: auto; display: block; }
+.chart .grid { stroke: #ffffff1c; }
+.chart .axis { fill: var(--stage-muted); font: 11px var(--mono); }
+.chart .hit { fill: transparent; cursor: pointer; }
+.chart .bar:hover .hit { fill: #ffffff08; }
+.chart .bar.active .hit { fill: #ffffff12; }
+.chart .delivered { fill: var(--signal-good); }
+.chart .delivered.leaking { fill: #f2b545; }
+.chart .delivered.overloaded { fill: #c9a2a0; }
+.chart .lost { fill: var(--signal-bad); opacity: 0.85; }
+.legend { display: flex; flex-wrap: wrap; gap: 16px; padding: 0 20px 16px; font-size: 0.8rem; color: var(--stage-muted); }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+
+.answer { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.card { display: grid; gap: 10px; align-content: start; padding: 20px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; min-width: 0; }
+.path { font: 500 0.82rem/1.4 var(--mono); color: var(--muted); }
+.big { font: 600 2.2rem/1 var(--display); letter-spacing: -0.02em; }
+.big.good { color: var(--good); }
+.big.bad { color: var(--bad); }
+.jump { justify-self: start; font: 500 0.85rem/1 var(--body); color: var(--accent); background: none; border: 1px solid currentColor; border-radius: 8px; padding: 8px 12px; cursor: pointer; }
+.jump:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+
+.matrix { overflow-x: auto; }
+.matrix table { border-collapse: separate; border-spacing: 4px; min-width: 620px; width: 100%; }
+.matrix th { font: 500 0.75rem/1.2 var(--mono); color: var(--muted); text-align: left; padding: 4px 6px; }
+.matrix thead th { text-align: center; }
+.matrix .corner { display: grid; gap: 2px; font-size: 0.68rem; letter-spacing: 0.04em; }
+.matrix td { padding: 0; }
+.matrix td.empty { text-align: center; color: var(--muted); }
+.cell { width: 100%; display: grid; gap: 2px; text-align: left; padding: 10px; border: 2px solid transparent; border-radius: 8px; cursor: pointer; color: var(--fg); font: inherit; }
+.cell b { font: 600 1rem/1.1 var(--mono); font-variant-numeric: tabular-nums; }
+.cell small { font-size: 0.72rem; color: var(--muted); }
+.cell:hover { border-color: var(--line); }
+.cell.active { border-color: var(--fg); }
+.b0 { background: var(--b0); } .b1 { background: var(--b1); } .b2 { background: var(--b2); } .b3 { background: var(--b3); } .b4 { background: var(--b4); }
+.scale { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 0.8rem; color: var(--muted); }
+.scale i { display: inline-block; width: 14px; height: 14px; border-radius: 3px; margin-right: 6px; vertical-align: -2px; }
+
+.queue { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 20px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+.queue .end { font: 600 0.85rem/1.2 var(--mono); text-align: center; }
+.slots { display: grid; grid-template-columns: repeat(32, 1fr); gap: 2px; position: relative; }
+.slots i { height: 22px; border-radius: 2px; background: var(--line); }
+.slots i.full { background: var(--accent); }
+.queue-caption { grid-column: 1 / -1; font-size: 0.9rem; color: var(--muted); }
+.rules { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
+.rules th, .rules td { text-align: left; padding: 10px 12px 10px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+.rules th { font: 500 0.72rem/1.2 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.rules td:not(:first-child) { font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.table-scroll { overflow-x: auto; }
+.fine { display: grid; gap: 10px; font-size: 0.9rem; color: var(--muted); }
+footer { padding-block: 32px 56px; font-size: 0.85rem; color: var(--muted); }
+button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--signal-good); outline-offset: 2px; }
+
+@media (max-width: 720px) {
+  .stage { grid-template-columns: 1fr; gap: 8px; }
+  .pipe { height: 140px; }
+  .controls { grid-template-columns: 1fr; }
+  .swap { justify-self: center; transform: rotate(90deg); }
+  .readout { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .readout > div:last-child { grid-column: 1 / -1; }
+  .readout b { font-size: 1.1rem; }
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+</style>
+
+<header class="wrap hero">
+  <div class="stack">
+    <span class="eyebrow">Rift · throughput benchmark · Nov 2026</span>
+    <h1>How much can Rift carry?</h1>
+    <p class="lede">We pushed framed, sequence-numbered data through every pair of Rift sides, TCP, UDP and UART, at rising speeds, and counted what came out the other end. This is the short version.</p>
+    <div class="short">
+      <div><b>Rift never slows a sender down</b><span>When data arrives faster than the far side can take it, Rift drops 4 KB chunks. Your sender sees no error.</span></div>
+      <div><b>Out of a serial port is easy</b><span>UART → network carried about 60 MB/s with under 1% loss. A real 115200 baud line is 11.5 KB/s.</span></div>
+      <div><b>Into a serial port is the trap</b><span>Network → UART loses data as soon as the network side outpaces the port. On a real line that means anything over its baud rate.</span></div>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section id="simulator" class="wrap">
+    <div class="stack">
+      <h2>Watch one path</h2>
+      <p class="read muted">Pick where data enters Rift (side A) and where it leaves (side B), then drag the send rate. Each dot is a chunk. At the gate in the middle, Rift either passes it on or drops it. Every number comes from a measured run.</p>
+      <div class="scope">
+        <div class="scope-head">
+          <span class="eyebrow" id="platform-note">Linux · 2 vCPU VPS</span>
+          <div class="toggle" role="group" aria-label="Machine">
+            <button type="button" data-platform="linux" aria-pressed="true"><span>Linux 2 vCPU</span></button>
+            <button type="button" data-platform="macos" aria-pressed="false"><span>macOS M3 Pro</span></button>
+          </div>
+        </div>
+        <div class="stage" id="stage">
+          <div class="side"><small>Side A · data enters</small><b id="side-a">UART</b><span id="role-a">serial port</span></div>
+          <div class="pipe"><canvas id="flow" aria-label="Animated chunks flowing through Rift"></canvas><span class="gate">rift</span></div>
+          <div class="side"><small>Side B · data leaves</small><b id="side-b">TCP server</b><span id="role-b">your app connects to Rift</span></div>
+        </div>
+        <div class="controls">
+          <label for="source">Enters at<select id="source"></select></label>
+          <button type="button" class="swap" id="swap" aria-label="Swap direction" title="Swap direction">⇄</button>
+          <label for="destination">Leaves at<select id="destination"></select></label>
+        </div>
+        <div class="rate">
+          <div class="rate-row"><span>send rate</span><span>slow → flat out</span></div>
+          <input type="range" id="rate" min="0" max="10" step="1" value="10" aria-label="Send rate step">
+        </div>
+        <div class="readout" aria-live="polite">
+          <div><small>Sent at</small><b id="offered">flat out</b></div>
+          <div><small>Arrived</small><b id="delivered">61 MB/s</b></div>
+          <div><small>Lost</small><b id="lost">0.1%</b></div>
+          <div><span class="verdict" id="verdict" data-verdict="clean">Clean</span><span id="verdict-text">Everything sent arrives. Rift keeps up.</span></div>
+        </div>
+        <div class="chart" id="chart"></div>
+        <div class="legend">
+          <span><i style="background: var(--signal-good)"></i>arrived, clean</span>
+          <span><i style="background: #f2b545"></i>arrived, some lost</span>
+          <span><i style="background: var(--signal-bad)"></i>dropped by Rift</span>
+          <span>Click a bar to jump to that rate.</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="wrap">
+    <div class="stack">
+      <span class="eyebrow">The question that started this</span>
+      <h2>A UART on side B, a TCP client on side A. How fast can it go?</h2>
+      <p class="read muted">Side A is a TCP server, your app connects to it. Side B is a serial port. Measured on the Linux box, the only place a pseudo-terminal can stand in for a UART.</p>
+      <div class="answer">
+        <div class="card">
+          <span class="path">UART (B) → TCP server (A) → your client</span>
+          <span class="big good">≈ 60 MB/s</span>
+          <p>Clean through 50 MB/s, and never worse than about 1% loss even flat out. A real 115200 baud port tops out at 11.5 KB/s, about 5,000 times less. <strong>Your client will get every byte the serial device sends.</strong></p>
+          <button type="button" class="jump" data-jump="linux uart tcp-server max">Show it running</button>
+        </div>
+        <div class="card">
+          <span class="path">your client → TCP server (A) → UART (B)</span>
+          <span class="big bad">≤ 10 MB/s</span>
+          <p>The reverse is where it breaks. Clean to 10 MB/s into a pty, 16% lost at 50 MB/s, 90% lost flat out. Your client still writes at full speed and gets no error. <strong>On a real port, keep the sender under the baud rate yourself.</strong></p>
+          <button type="button" class="jump" data-jump="linux tcp-server uart max">Show it breaking</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="wrap">
+    <div class="stack">
+      <span class="eyebrow">Every combination</span>
+      <h2>The clean ceiling for each path</h2>
+      <p class="read muted">The highest rate where every step up to it lost less than 0.1%. Below each number is the first rate that leaked. Click any cell to watch it.</p>
+      <div class="toggle light-toggle" role="group" aria-label="Machine for the table" style="justify-self: start; color: var(--fg)">
+        <button type="button" data-platform="linux" aria-pressed="true"><span>Linux 2 vCPU</span></button>
+        <button type="button" data-platform="macos" aria-pressed="false"><span>macOS M3 Pro</span></button>
+      </div>
+      <div class="matrix" id="matrix"></div>
+      <div class="scale">
+        <span><i class="b0"></i>≤ 1 MB/s</span><span><i class="b1"></i>up to 10</span><span><i class="b2"></i>10 to 50</span><span><i class="b3"></i>50 to 100</span><span><i class="b4"></i>100 MB/s and up</span>
+      </div>
+      <p class="read muted">Read it row by row. Data entering through a <strong>UDP</strong> side is the weakest row, it arrives in single datagrams and Rift tops out around 200k of them per second. Data leaving through a <strong>UART</strong> is the weakest column. The macOS table has no UART, because macOS will not set a baud rate on a pty.</p>
+    </div>
+  </section>
+
+  <section class="wrap">
+    <div class="stack read">
+      <span class="eyebrow">Why it drops instead of slowing down</span>
+      <h2>A 1 MB bucket between the two sides</h2>
+      <p>Each direction has a queue of 256 slots, 4 KB each. Rift reads a chunk, tries to put it in the queue, and if the queue is full it throws the chunk away and keeps reading. It never stops reading, so TCP flow control never reaches your sender.</p>
+      <div class="queue" aria-hidden="true">
+        <span class="end">side A<br><span class="muted">reads</span></span>
+        <div class="slots" id="slots"></div>
+        <span class="end">side B<br><span class="muted">writes</span></span>
+        <span class="queue-caption">One megabyte is about 5 ms of traffic at 200 MB/s. Any short hiccup on the receiving side fills it, which is why loss starts in bursts below the ceiling, not as a clean cutoff.</span>
+      </div>
+      <p>Two things follow. A fast TCP sender gets a stream with holes cut at random offsets, so anything framed on top sees corruption. And the sender cannot tell: as far as it knows, every write succeeded.</p>
+    </div>
+  </section>
+
+  <section class="wrap">
+    <div class="stack">
+      <span class="eyebrow">Rules of thumb</span>
+      <h2>What to plan for</h2>
+      <div class="table-scroll">
+        <table class="rules">
+          <thead><tr><th>Path</th><th>2 vCPU box</th><th>M3 Pro laptop</th></tr></thead>
+          <tbody>
+            <tr><td>TCP in, TCP or UDP client out</td><td>10 to 50 MB/s</td><td>~100 to 300 MB/s</td></tr>
+            <tr><td>TCP in, UDP server out</td><td>10 to 50 MB/s</td><td>~50 to 200 MB/s</td></tr>
+            <tr><td>UDP in, anything out</td><td>1 to 10 MB/s</td><td>10 to 100 MB/s</td></tr>
+            <tr><td>UART in, network out</td><td>~50 MB/s, the port limits first</td><td>not measured</td></tr>
+            <tr><td>Network in, UART out</td><td>1 to 10 MB/s, or the baud rate</td><td>not measured</td></tr>
+            <tr><td>TCP both ways, flat out</td><td>~25 to 40 MB/s each way, ~50% lost</td><td>~330 MB/s each way, ~50% lost</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="read muted">At light load every path adds about 50 µs over a direct connection (p50 around 110 to 130 µs on macOS). A 110-minute soak at about 120 MB/s total held memory flat between 17 and 36 MB. Rift is stable. The limit is rate, not time.</p>
+    </div>
+  </section>
+
+  <section class="wrap">
+    <div class="stack read fine">
+      <span class="eyebrow">Fine print</span>
+      <p>Everything ran over loopback on one machine, with the test harness competing with Rift for CPU. Frames were 1 KB, 4 seconds per step, a fresh <code>rift pipe</code> per run, logging set to <code>--quiet</code>. Loss means frames sent minus frames received, cut or spliced frames count as lost.</p>
+      <p>The Linux machine is a 2 vCPU cloud VM, so it shows what an edge box can do, not a fair match for the 11-core laptop. The UART stand-in is a pseudo-terminal, which has no baud limit, so UART numbers are Rift's own ceiling. A real line is slower than every one of them.</p>
+      <p>UDP numbers on macOS stop near 200 MB/s because that is where the harness itself tops out with 1 KB datagrams. The full report, with latency, frame sizes, CPU and the soak, is <code>bench/REPORT.html</code>.</p>
+    </div>
+  </section>
+</main>
+<footer class="wrap">Rift benchmark harness · <code>bench/</code> · numbers from <code>results/macos</code> and <code>results/linux</code></footer>
+<script>
+(() => {
+  const slots = document.getElementById("slots");
+  if (!slots) return;
+  slots.innerHTML = Array.from({ length: 32 }, (_, index) => `<i class="${index < 26 ? "full" : ""}"></i>`).join("");
+})();
+</script>
+<script type="module">/*BUNDLE*/</script>

@@ -16,12 +16,13 @@ description: Run ad-hoc Rift bridges with `rift pipe` to forward bytes between T
 ## Command
 
 ```sh
-rift pipe <endpoint-a> <endpoint-b> [--name <label>] [--log text|hex|json] [--quiet]
+rift pipe <endpoint-a> <endpoint-b> [--name <label>] [--log text|hex|json] [--quiet] [-c file]
 ```
 
 - `--name` labels the bridge in logs and stdin commands (default `adhoc`).
 - `--log` sets traffic rendering: `hex` (default), `text`, or `json` (one JSON object per line, best for agents).
 - `--quiet` hides traffic.
+- `-c` only supplies the `[logging]` section (default: the usual config path, if that file exists).
 - Always quote URIs that contain `?` or `&`.
 
 ## Endpoints
@@ -93,6 +94,21 @@ rift pipe tcp-server://127.0.0.1:9000 tcp://127.0.0.1:7000 --log json < rift.in 
 exec 3> rift.in
 echo 'b hex 01 02 03' >&3
 ```
+
+## Inject from another shell
+
+A running pipe accepts commands from other processes on the same machine, addressed by its `--name`:
+
+```sh
+rift inject adhoc a text 'hello\r\n'
+rift inject adhoc both hex de ad be ef
+rift inject adhoc b file ./frame.bin
+rift inject adhoc a text ping --every 500ms --count 10   # omit --count to repeat until stopped
+rift workflow stop adhoc cli-inject
+rift workflow status
+```
+
+Prefer this over a FIFO. Give each pipe a distinct `--name` when running several.
 
 ## Docker
 

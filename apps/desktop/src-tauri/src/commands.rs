@@ -1,14 +1,15 @@
 use std::fs;
 
 use rift_core::{
-    list_serial_ports, parse_payload, BridgeStatus, Error, PayloadFormat, Profile, Result,
-    SerialPortInfo, Side, Target,
+    list_serial_ports, parse_payload, BridgeStatus, PayloadFormat, Profile, Result, SerialPortInfo,
+    Side, Target,
 };
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::State;
 
 use crate::app_state::AppState;
 use crate::event_forwarder::EventSink;
+use crate::{profile_lifecycle, profile_logging};
 
 #[tauri::command]
 pub fn subscribe_events(sink: State<EventSink>, channel: Channel<InvokeResponseBody>) {
@@ -47,6 +48,12 @@ pub fn import_config(
     store
         .import_atomic(profiles.clone(), &state.config_path)
         .map_err(|error| error.to_string())?;
+    for profile in &profiles {
+        state
+            .rift
+            .logger()
+            .log(profile_logging::imported_record(&profile.name));
+    }
     Ok(profiles)
 }
 
@@ -71,43 +78,41 @@ pub fn save_profile(
     profile: Profile,
 ) -> Result<()> {
     let mut store = state.store.lock().unwrap();
+    let record = profile_logging::saved_record(&store, previous_name.as_deref(), &profile.name);
     store.upsert(previous_name.as_deref(), profile)?;
-    store.save(&state.config_path)
+    store.save(&state.config_path)?;
+    state.rift.logger().log(record);
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn delete_profile(state: State<'_, AppState>, name: String) -> Result<()> {
-    let _ = state.rift.stop(&name).await;
+    let _ = profile_lifecycle::stop(&state, &name).await;
     let mut store = state.store.lock().unwrap();
     store.remove(&name)?;
-    store.save(&state.config_path)
-}
-
-fn stored_profile(state: &AppState, name: &str) -> Result<Profile> {
+    store.save(&state.config_path)?;
     state
-        .store
-        .lock()
-        .unwrap()
-        .get(name)
-        .cloned()
-        .ok_or_else(|| Error::ProfileNotFound(name.to_string()))
+        .rift
+        .logger()
+        .log(profile_logging::removed_record(&name));
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn start_profile(state: State<'_, AppState>, name: String) -> Result<()> {
-    state.rift.start(stored_profile(&state, &name)?)
+    profile_lifecycle::start(&state, state.stored_profile(&name)?)
 }
 
 #[tauri::command]
 pub async fn stop_profile(state: State<'_, AppState>, name: String) -> Result<()> {
-    state.rift.stop(&name).await
+    profile_lifecycle::stop(&state, &name).await
 }
 
 #[tauri::command]
 pub async fn restart_profile(state: State<'_, AppState>, name: String) -> Result<()> {
-    let profile = stored_profile(&state, &name)?;
-    let _ = state.rift.stop(&name).await;
-    state.rift.start(profile)
+    let profile = state.stored_profile(&name)?;
+    let _ = profile_lifecycle::stop(&state, &name).await;
+    profile_lifecycle::start(&state, profile)
 }
 
 #[tauri::command]
@@ -118,7 +123,7 @@ pub async fn set_side_enabled(
     enabled: bool,
 ) -> Result<()> {
     if enabled {
-        let profile = stored_profile(&state, &name)?;
+        let profile = state.stored_profile(&name)?;
         let config = match side {
             Side::A => profile.a,
             Side::B => profile.b,

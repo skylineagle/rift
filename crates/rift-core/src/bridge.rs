@@ -11,6 +11,7 @@ use crate::drops::DropTally;
 use crate::endpoint::link::{Context, Link, WriteRequest};
 use crate::endpoint::{self, Endpoint};
 use crate::event::{ConnectionState, Event, Origin};
+use crate::outlet::Outlet;
 use crate::peers::PeerCounter;
 use crate::profile::Profile;
 use crate::side::{Side, Target};
@@ -183,7 +184,7 @@ fn create_side(
 
 pub struct Bridge {
     profile: String,
-    events: broadcast::Sender<Event>,
+    outlet: Arc<Outlet>,
     a: SideControl,
     b: SideControl,
     cancel: CancellationToken,
@@ -193,11 +194,11 @@ pub struct Bridge {
 
 impl Bridge {
     pub fn start(profile: Profile) -> Self {
-        let (events, _) = broadcast::channel(EVENT_CAPACITY);
-        Self::start_with_events(profile, events)
+        Self::start_with_outlet(profile, Outlet::detached(EVENT_CAPACITY))
     }
 
-    pub(crate) fn start_with_events(profile: Profile, events: broadcast::Sender<Event>) -> Self {
+    pub(crate) fn start_with_outlet(profile: Profile, outlet: Outlet) -> Self {
+        let outlet = Arc::new(outlet);
         let cancel = CancellationToken::new();
         let relay_cancel = CancellationToken::new();
         let a_enabled = profile.a.enabled;
@@ -220,7 +221,7 @@ impl Bridge {
                     stop: relay_cancel.clone(),
                 },
                 b.handle.clone(),
-                events.clone(),
+                outlet.clone(),
             )),
             tokio::spawn(relay_side(
                 profile.name.clone(),
@@ -232,12 +233,12 @@ impl Bridge {
                     stop: relay_cancel.clone(),
                 },
                 a.handle.clone(),
-                events.clone(),
+                outlet.clone(),
             )),
         ];
         Self {
             profile: profile.name,
-            events,
+            outlet,
             a,
             b,
             cancel,
@@ -251,7 +252,7 @@ impl Bridge {
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
-        self.events.subscribe()
+        self.outlet.events.subscribe()
     }
 
     pub fn inject(&self, target: Target, bytes: impl Into<Bytes>) {
@@ -267,10 +268,10 @@ impl Bridge {
                     &bytes,
                     true,
                 ),
-                self.events.clone(),
+                self.outlet.clone(),
             );
             if let Err(message) = self.side(side).handle.deliver(request) {
-                let _ = self.events.send(Event::status(
+                self.outlet.events.publish(Event::status(
                     &self.profile,
                     side,
                     ConnectionState::Error { message },
@@ -346,26 +347,27 @@ async fn relay_side(
     side: Side,
     mut channels: RelayChannels,
     opposite: SideHandle,
-    events: broadcast::Sender<Event>,
+    outlet: Arc<Outlet>,
 ) {
     loop {
         tokio::select! {
             biased;
             Some(state) = channels.states.recv() => {
                 channels.state_sender.send_replace(state.clone());
-                let _ = events.send(Event::status(&profile, side, state));
+                outlet.events.publish(Event::status(&profile, side, state));
             }
             Some(bytes) = channels.reads.recv() => {
-                let _ = events.send(Event::data(
+                outlet.traffic.side(side).record_received(bytes.len());
+                outlet.events.publish(Event::data(
                     &profile, side, side.opposite(), Origin::Received, &bytes, true,
                 ));
                 let request = WriteRequest::new(
                     bytes.clone(),
                     Event::data(&profile, side, side.opposite(), Origin::Forwarded, &bytes, true),
-                    events.clone(),
+                    outlet.clone(),
                 );
                 if let Err(message) = opposite.deliver(request) {
-                    let _ = events.send(Event::status(&profile, side.opposite(), ConnectionState::Error { message }));
+                    outlet.events.publish(Event::status(&profile, side.opposite(), ConnectionState::Error { message }));
                 }
             }
             _ = channels.stop.cancelled() => break,

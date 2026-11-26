@@ -75,7 +75,7 @@ export const applyEvent = (bridge: BridgeRuntime, event: RiftEvent): BridgeRunti
       },
     };
   }
-  if (event.type === "dropped") return bridge;
+  if (event.type === "dropped" || event.type === "workflow") return bridge;
   const size = event.length;
   const source = bridge.counters[event.source];
   const target = bridge.counters[event.target];

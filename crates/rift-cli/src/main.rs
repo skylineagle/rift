@@ -1,8 +1,12 @@
 mod arguments;
 mod commands;
 mod config_path;
+mod duration;
+mod host_setup;
+mod inject_cli;
 mod inject_command;
 mod install_source;
+mod logging_setup;
 mod printer;
 mod release;
 mod render;
@@ -11,6 +15,7 @@ mod stdin_commands;
 mod update_cache;
 mod update_command;
 mod update_notice;
+mod workflow_command;
 
 use anyhow::Result;
 use clap::Parser;
@@ -29,6 +34,8 @@ async fn main() -> Result<()> {
             commands::pipe(arguments).await
         }
         Command::Update { check } => update_command::update(check).await,
+        Command::Inject(arguments) => inject_cli::inject(arguments),
+        Command::Workflow { action } => workflow_command::workflow(action),
         Command::Profile { action } => commands::profile(action),
         Command::Ports => commands::ports(),
     }

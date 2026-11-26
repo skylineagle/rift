@@ -1,17 +1,17 @@
 use chrono::{DateTime, Local, Utc};
 use rift_core::format::{escaped_ascii, hex_dump_line};
-use rift_core::{Event, Origin};
+use rift_core::{Event, Origin, WorkflowState};
 
 use crate::arguments::LogFormat;
 
 pub fn render(event: &Event, format: LogFormat, quiet: bool) -> Option<String> {
+    if quiet && is_noisy(event) {
+        return None;
+    }
     if let LogFormat::Json = format {
-        return serde_json::to_string(event)
-            .ok()
-            .filter(|_| keep(event, quiet));
+        return serde_json::to_string(event).ok();
     }
     match event {
-        Event::Data { .. } if quiet => None,
         Event::Data {
             profile,
             timestamp,
@@ -65,11 +65,38 @@ pub fn render(event: &Event, format: LogFormat, quiet: bool) -> Option<String> {
                 clock(timestamp)
             ))
         }
+        Event::Workflow {
+            profile,
+            timestamp,
+            workflow,
+            state,
+        } => Some(format!(
+            "{} {profile} workflow {workflow} {}",
+            clock(timestamp),
+            describe_workflow(state)
+        )),
     }
 }
 
-fn keep(event: &Event, quiet: bool) -> bool {
-    !(quiet && matches!(event, Event::Data { .. }))
+fn is_noisy(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Data { .. }
+            | Event::Workflow {
+                state: WorkflowState::Step { .. },
+                ..
+            }
+    )
+}
+
+fn describe_workflow(state: &WorkflowState) -> String {
+    match state {
+        WorkflowState::Started => "started".to_string(),
+        WorkflowState::Step { cycle, step } => format!("step {} (cycle {cycle})", step + 1),
+        WorkflowState::Finished => "finished".to_string(),
+        WorkflowState::Stopped => "stopped".to_string(),
+        WorkflowState::Failed { message } => format!("failed: {message}"),
+    }
 }
 
 fn clock(timestamp: &DateTime<Utc>) -> String {
@@ -141,6 +168,26 @@ mod tests {
             let json = render(&event, LogFormat::Json, false).unwrap();
             assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), event);
         }
+    }
+
+    #[test]
+    fn quiet_hides_only_workflow_steps() {
+        let step = Event::workflow(
+            "gps",
+            "heartbeat",
+            WorkflowState::Step { cycle: 3, step: 1 },
+        );
+        let started = Event::workflow("gps", "heartbeat", WorkflowState::Started);
+        for format in [LogFormat::Text, LogFormat::Hex, LogFormat::Json] {
+            assert!(render(&step, format, true).is_none());
+            assert!(render(&started, format, true).is_some());
+        }
+        assert!(render(&step, LogFormat::Text, false)
+            .unwrap()
+            .ends_with("gps workflow heartbeat step 2 (cycle 3)"));
+        let json = render(&step, LogFormat::Json, false).unwrap();
+        assert!(json.contains(r#""state":{"state":"step","cycle":3,"step":1}"#));
+        assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), step);
     }
 
     #[test]

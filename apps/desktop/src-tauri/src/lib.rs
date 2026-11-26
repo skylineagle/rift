@@ -4,11 +4,16 @@ mod cli_link;
 mod commands;
 mod event_batch;
 mod event_forwarder;
+pub mod headless;
+mod logging_commands;
+mod profile_lifecycle;
+mod profile_logging;
+mod runtime;
+mod workflow_commands;
 
-use tauri::Manager;
+use tauri::{Manager, RunEvent};
 
 use app_state::AppState;
-use event_forwarder::EventSink;
 
 pub fn run() {
     tauri::Builder::default()
@@ -20,8 +25,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             cli_link::link_bundled_cli();
             let state = AppState::load()?;
-            let sink = EventSink::default();
-            event_forwarder::forward_events(sink.clone(), state.rift.subscribe());
+            let sink = runtime::start(&state);
             app.manage(state);
             app.manage(sink);
             Ok(())
@@ -44,7 +48,20 @@ pub fn run() {
             commands::preview_payload,
             commands::list_ports,
             commands::export_log,
+            logging_commands::get_logging_config,
+            logging_commands::save_logging_config,
+            logging_commands::default_log_directory,
+            workflow_commands::start_workflow,
+            workflow_commands::stop_workflow,
+            workflow_commands::running_workflows,
+            workflow_commands::validate_workflow,
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run Rift");
+        .build(tauri::generate_context!())
+        .expect("failed to build Rift")
+        .run(|app, event| {
+            if let RunEvent::Exit = event {
+                let state = app.state::<AppState>();
+                tauri::async_runtime::block_on(profile_lifecycle::shut_down(&state));
+            }
+        });
 }

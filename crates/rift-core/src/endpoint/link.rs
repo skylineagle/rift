@@ -9,6 +9,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::drops::DropTally;
 use crate::event::{ConnectionState, Event, Origin};
+use crate::logging::Injection;
+use crate::outlet::Outlet;
 use crate::peers::PeerCounter;
 use crate::side::Side;
 
@@ -25,17 +27,17 @@ pub(crate) struct WriteRequest {
 
 struct Receipt {
     event: Event,
-    events: broadcast::Sender<Event>,
+    outlet: Arc<Outlet>,
     completed: AtomicBool,
 }
 
 impl WriteRequest {
-    pub fn new(bytes: Bytes, event: Event, events: broadcast::Sender<Event>) -> Self {
+    pub fn new(bytes: Bytes, event: Event, outlet: Arc<Outlet>) -> Self {
         Self {
             bytes,
             receipt: Arc::new(Receipt {
                 event,
-                events,
+                outlet,
                 completed: AtomicBool::new(false),
             }),
         }
@@ -65,7 +67,7 @@ impl WriteRequest {
             } => Some(DropReporter {
                 profile: profile.clone(),
                 side: *target,
-                events: self.receipt.events.clone(),
+                outlet: self.receipt.outlet.clone(),
             }),
             _ => None,
         }
@@ -77,7 +79,44 @@ impl WriteRequest {
             if let Event::Data { timestamp, .. } = &mut event {
                 *timestamp = chrono::Utc::now();
             }
-            let _ = self.receipt.events.send(event);
+            self.receipt.settle(event);
+        }
+    }
+}
+
+impl Receipt {
+    fn settle(&self, event: Event) {
+        self.account(&event);
+        self.outlet.events.publish(event);
+    }
+
+    fn account(&self, event: &Event) {
+        let Event::Data {
+            profile,
+            target,
+            origin,
+            bytes,
+            delivered,
+            undelivered_reason,
+            ..
+        } = event
+        else {
+            return;
+        };
+        let counters = self.outlet.traffic.side(*target);
+        if *delivered {
+            counters.record_delivered(*origin, bytes.len());
+        } else {
+            counters.record_undelivered(*origin, bytes.len());
+        }
+        if let (Origin::Injected, Some(logger)) = (origin, &self.outlet.logger) {
+            logger.log_injection(Injection {
+                profile,
+                target: *target,
+                bytes: bytes.len(),
+                delivered: *delivered,
+                undelivered_reason: undelivered_reason.as_deref(),
+            });
         }
     }
 }
@@ -92,7 +131,7 @@ impl Drop for Receipt {
             } = &mut self.event
             {
                 *delivered = false;
-                let _ = self.events.send(self.event.clone());
+                self.settle(self.event.clone());
             }
         }
     }
@@ -136,14 +175,14 @@ impl WriteSource for mpsc::Receiver<WriteRequest> {
 struct DropReporter {
     profile: String,
     side: Side,
-    events: broadcast::Sender<Event>,
+    outlet: Arc<Outlet>,
 }
 
 impl DropReporter {
     fn report(&self, peer: Option<String>, chunks: u64) {
-        let _ = self
+        self.outlet
             .events
-            .send(Event::dropped(&self.profile, self.side, peer, chunks));
+            .publish(Event::dropped(&self.profile, self.side, peer, chunks));
     }
 }
 
@@ -205,12 +244,13 @@ mod tests {
 
     #[test]
     fn broadcast_success_is_logged_once_after_a_recipient_writes() {
-        let (events, mut received) = broadcast::channel(8);
+        let outlet = Arc::new(Outlet::detached(8));
+        let mut received = outlet.events.subscribe();
         let bytes = Bytes::from_static(b"hello");
         let request = WriteRequest::new(
             bytes.clone(),
             Event::data("test", Side::A, Side::B, Origin::Forwarded, &bytes, true),
-            events,
+            outlet,
         );
         let second_recipient = request.clone();
         assert!(received.try_recv().is_err());
@@ -231,12 +271,13 @@ mod tests {
 
     #[test]
     fn undelivered_injection_keeps_its_payload_and_is_not_a_success() {
-        let (events, mut received) = broadcast::channel(8);
+        let outlet = Arc::new(Outlet::detached(8));
+        let mut received = outlet.events.subscribe();
         let bytes = Bytes::from_static(b"hello");
         let request = WriteRequest::new(
             bytes.clone(),
             Event::data("test", Side::A, Side::B, Origin::Injected, &bytes, true),
-            events,
+            outlet,
         );
         drop(request);
         assert!(
