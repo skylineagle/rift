@@ -3,7 +3,8 @@ import type { WorkflowEvent, WorkflowStatus } from "@/lib/types";
 export type WorkflowProgress = { cycle: number; step: number };
 export type WorkflowRuns = Record<string, WorkflowStatus>;
 
-export const workflowRunKey = (profile: string, workflow: string) => `${profile}:${workflow}`;
+export const workflowRunKey = (profile: string, workflow: string) =>
+  JSON.stringify([profile, workflow]);
 
 const INITIAL_PROGRESS: WorkflowProgress = { cycle: 1, step: 0 };
 
@@ -19,16 +20,19 @@ export const applyWorkflowEvent = (runs: WorkflowRuns, event: WorkflowEvent): Wo
   return remaining;
 };
 
-export const seedWorkflowRuns = (
-  runs: WorkflowRuns,
+export const reconcileWorkflowRuns = (
   statuses: WorkflowStatus[],
-  reportedKeys: ReadonlySet<string>,
-): WorkflowRuns => {
-  const seeded = statuses
-    .map((status) => [workflowRunKey(status.profile, status.workflow), status] as const)
-    .filter(([key]) => !reportedKeys.has(key));
-  return seeded.length === 0 ? runs : { ...runs, ...Object.fromEntries(seeded) };
-};
+  arrived: WorkflowEvent[],
+  fetchStartedAt: number,
+): WorkflowRuns =>
+  arrived
+    .filter((event) => Date.parse(event.timestamp) >= fetchStartedAt)
+    .reduce<WorkflowRuns>(
+      applyWorkflowEvent,
+      Object.fromEntries(
+        statuses.map((status) => [workflowRunKey(status.profile, status.workflow), status]),
+      ),
+    );
 
 export const runningWorkflowNames = (runs: WorkflowRuns, profile: string) =>
   Object.values(runs)

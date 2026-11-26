@@ -3,7 +3,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 use rift_core::control::ControlServer;
-use rift_core::{Logger, LoggingConfig, Profile, Rift, Workflows};
+use rift_core::{LoggingConfig, Profile, Rift, Workflows};
+
+use crate::logging_setup::logger;
 
 const HOST_KIND: &str = "cli";
 const LOG_DRAIN_DELAY: Duration = Duration::from_millis(200);
@@ -16,7 +18,7 @@ pub struct Host {
 
 impl Host {
     pub fn new(logging: LoggingConfig) -> Self {
-        let rift = Arc::new(Rift::with_logger(Logger::new(logging)));
+        let rift = Arc::new(Rift::with_logger(logger(logging)));
         tokio::spawn(
             rift.logger()
                 .clone()

@@ -30,7 +30,7 @@ b = { kind = "tcp-client", address = "example.com:7000", enabled = false }
 # [logging.file]
 # enabled = true
 # directory = "/var/log/rift" # omit for <OS local data dir>/rift/logs
-# file_name = "rift.log"
+# file_name = "rift.log"     # omit for rift-cli.log (CLI) or rift-desktop.log (desktop)
 # rotate = "size"             # size | hourly | daily
 # max_file_bytes = 10485760   # used by rotate = "size"
 # max_files = 10              # rotated files kept, 0 = unlimited

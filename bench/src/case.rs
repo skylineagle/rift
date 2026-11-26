@@ -5,7 +5,7 @@ use clap::ValueEnum;
 use serde::Serialize;
 
 use crate::clock::now_ns;
-use crate::flow::{Flow, FlowResult, SendPlan};
+use crate::flow::{Flow, FlowResult, SendPlan, TAIL_DIVISOR};
 use crate::kind::Kind;
 use crate::monitor::{summarize, Monitor, Usage};
 use crate::rift::{side_key, Output, RiftCommand, RiftProcess};
@@ -150,6 +150,16 @@ fn execute(command: &RiftCommand, config: &CaseConfig, result: &mut CaseResult) 
     Ok(())
 }
 
+fn run_window(flows: &mut [Flow], duration: Duration) {
+    let tail = duration / TAIL_DIVISOR;
+    std::thread::sleep(duration - tail);
+    let before_tail: Vec<u64> = flows.iter().map(Flow::received).collect();
+    std::thread::sleep(tail);
+    for (flow, frames) in flows.iter_mut().zip(before_tail) {
+        flow.close_window(frames);
+    }
+}
+
 type Outcome = (bool, Vec<FlowResult>, (u64, u64));
 
 fn connect_and_run(
@@ -195,7 +205,7 @@ fn connect_and_run(
         ));
     }
     let started = now_ns();
-    std::thread::sleep(config.duration);
+    run_window(&mut flows, config.duration);
     for flow in &mut flows {
         flow.stop_sending();
     }

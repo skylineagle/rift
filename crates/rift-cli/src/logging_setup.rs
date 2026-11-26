@@ -4,6 +4,11 @@ use anyhow::Result;
 use rift_core::{LogRecord, Logger, LoggingConfig, ProfileStore};
 
 const LOGGING_SECTION: &str = "logging";
+const LOG_FILE_NAME: &str = "rift-cli.log";
+
+pub fn logger(config: LoggingConfig) -> Logger {
+    Logger::with_default_file_name(config, LOG_FILE_NAME)
+}
 
 pub fn logging_config(store: &ProfileStore) -> Result<LoggingConfig> {
     Ok(store.section(LOGGING_SECTION)?)
@@ -17,7 +22,7 @@ pub fn optional_logging_config(path: Option<&Path>) -> Result<LoggingConfig> {
 }
 
 pub fn log_profile_change(config: LoggingConfig, event: &str, action: &str, profile: &str) {
-    let logger = Logger::new(config);
+    let logger = logger(config);
     logger.log(LogRecord::info(event, format!("{profile} {action}")).profile(profile));
     logger.flush();
 }

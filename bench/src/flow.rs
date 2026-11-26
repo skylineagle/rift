@@ -29,6 +29,15 @@ pub struct SendCounters {
     pub error: Mutex<Option<String>>,
 }
 
+pub const TAIL_DIVISOR: u32 = 4;
+
+#[derive(Debug, Clone, Copy)]
+pub struct Window {
+    pub goodput_mbps: f64,
+    pub received_frames: u64,
+    pub tail_frames: u64,
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct FlowResult {
     pub name: String,
@@ -43,6 +52,8 @@ pub struct FlowResult {
     pub send_retries: u64,
     pub offered_mbps: f64,
     pub goodput_mbps: f64,
+    #[serde(skip)]
+    pub window: Option<Window>,
     pub latency: Latency,
     pub error: Option<String>,
 }
@@ -56,6 +67,7 @@ pub struct Flow {
     receive_stop: Arc<AtomicBool>,
     sender: Option<JoinHandle<()>>,
     receiver: Option<JoinHandle<()>>,
+    window: Option<Window>,
 }
 
 impl Flow {
@@ -86,7 +98,20 @@ impl Flow {
             receive_stop,
             sender: None,
             receiver: Some(receiver),
+            window: None,
         }
+    }
+
+    pub fn close_window(&mut self, frames_before_tail: u64) {
+        let received_frames = self.received();
+        let started = self.counters.started_ns.load(Ordering::Relaxed);
+        let seconds = now_ns().saturating_sub(started).max(1) as f64 / 1e9;
+        let bytes = received_frames as f64 * self.plan.frame_size as f64;
+        self.window = Some(Window {
+            goodput_mbps: bytes / seconds / 1e6,
+            received_frames,
+            tail_frames: received_frames.saturating_sub(frames_before_tail),
+        });
     }
 
     pub fn stop_sending(&mut self) {
@@ -153,6 +178,7 @@ impl Flow {
             send_retries: counters.retries.load(Ordering::Relaxed),
             offered_mbps: sent as f64 * size / send_seconds / 1e6,
             goodput_mbps: received as f64 * size / receive_seconds / 1e6,
+            window: self.window,
             latency: stats.total.latency(),
             error: counters.error.lock().unwrap().clone(),
         }

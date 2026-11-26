@@ -1,7 +1,11 @@
-use std::net::TcpListener;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use super::client::{send_in, status_all_in};
+use super::hosts::{self, HostRecord};
 use super::*;
 use crate::error::Error;
 use crate::manager::Rift;
@@ -153,4 +157,80 @@ fn deletes_stale_host_files() {
         "no running Rift instance found"
     );
     assert!(!stale.exists());
+}
+
+fn empty_server(directory: &Path) -> (ControlServer, HostRecord) {
+    let rift = Arc::new(Rift::new());
+    let workflows = Arc::new(Workflows::new(rift.clone()));
+    let server =
+        ControlServer::start_in(directory, "cli", rift, workflows, Arc::new(|_| None)).unwrap();
+    let (_, host) = hosts::read_all(directory).unwrap().remove(0);
+    (server, host)
+}
+
+fn connect(port: u16) -> TcpStream {
+    let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    stream
+}
+
+fn reply(stream: &mut TcpStream) -> String {
+    let mut received = String::new();
+    let _ = stream.read_to_string(&mut received);
+    received
+}
+
+fn exchange_line(port: u16, line: &[u8]) -> String {
+    let mut stream = connect(port);
+    stream.write_all(line).unwrap();
+    reply(&mut stream)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn limits_unauthenticated_connections() {
+    let directory = tempfile::tempdir().unwrap();
+    let (_server, host) = empty_server(directory.path());
+    tokio::task::spawn_blocking(move || {
+        let wrong_token = b"{\"token\":\"x\",\"request\":{\"type\":\"unknown\"}}\n";
+        assert!(exchange_line(host.port, wrong_token).contains("invalid token"));
+        let oversized = vec![b'x'; 64 * 1024 + 1];
+        assert!(exchange_line(host.port, &oversized).contains("request exceeds 64 KiB"));
+        let started = Instant::now();
+        let mut idle: Vec<TcpStream> = (0..16).map(|_| connect(host.port)).collect();
+        assert_eq!(reply(&mut connect(host.port)), "");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        for stream in &mut idle {
+            assert_eq!(reply(stream), "");
+        }
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(exchange_line(host.port, wrong_token).contains("invalid token"));
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn skips_a_stale_record_whose_port_rejects_the_token() {
+    let directory = tempfile::tempdir().unwrap();
+    let (_server, host) = empty_server(directory.path());
+    let stale_directory = tempfile::tempdir().unwrap();
+    let stale = HostRecord {
+        pid: 0,
+        token: "stale".into(),
+        ..host
+    };
+    hosts::register(directory.path(), &stale).unwrap();
+    hosts::register(stale_directory.path(), &stale).unwrap();
+    let path = directory.path().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        assert!(send_in(&path, ControlRequest::Status).unwrap().ok);
+        assert_eq!(
+            failure_message(send_in(stale_directory.path(), inject("gps", "01"))),
+            "no running Rift instance found"
+        );
+    })
+    .await
+    .unwrap();
 }

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::level::LogLevel;
 
-const DEFAULT_FILE_NAME: &str = "rift.log";
+pub(super) const DEFAULT_FILE_NAME: &str = "rift.log";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -69,12 +69,22 @@ impl Default for FileSinkConfig {
         Self {
             enabled: false,
             directory: None,
-            file_name: DEFAULT_FILE_NAME.to_string(),
+            file_name: String::new(),
             rotate: RotationPolicy::default(),
             max_file_bytes: 10 * 1024 * 1024,
             max_files: 10,
             max_total_bytes: None,
         }
+    }
+}
+
+impl FileSinkConfig {
+    pub(super) fn named(&self, default_file_name: &str) -> Self {
+        let mut named = self.clone();
+        if named.file_name.is_empty() {
+            named.file_name = default_file_name.to_string();
+        }
+        named
     }
 }
 
@@ -176,6 +186,14 @@ headers = { Authorization = "ApiKey xyz" }
         assert!(!config.has_enabled_sink());
         let written = toml::to_string(&config).unwrap();
         assert_eq!(toml::from_str::<LoggingConfig>(&written).unwrap(), config);
+    }
+
+    #[test]
+    fn an_explicit_file_name_wins_over_the_host_default() {
+        let unnamed = FileSinkConfig::default();
+        assert_eq!(unnamed.named("rift-cli.log").file_name, "rift-cli.log");
+        let explicit: FileSinkConfig = toml::from_str("file_name = \"custom.log\"").unwrap();
+        assert_eq!(explicit.named("rift-cli.log").file_name, "custom.log");
     }
 
     #[test]

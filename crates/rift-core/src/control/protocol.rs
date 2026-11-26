@@ -7,7 +7,10 @@ use crate::side::Target;
 use crate::workflow::Workflow;
 use crate::workflow_runner::WorkflowStatus;
 
-pub(super) const MAX_MESSAGE_BYTES: u64 = 1024 * 1024;
+pub(super) const MAX_REQUEST_BYTES: u64 = 64 * 1024;
+pub(super) const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
+pub(super) const REQUEST_TOO_LARGE: &str = "request exceeds 64 KiB";
+pub(super) const INVALID_TOKEN: &str = "invalid token";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
@@ -61,6 +64,11 @@ pub(super) struct Envelope {
     pub request: ControlRequest,
 }
 
+#[derive(Debug, Deserialize)]
+pub(super) struct Credentials {
+    pub token: String,
+}
+
 impl ControlResponse {
     pub(super) fn success(data: Option<Value>) -> Self {
         Self {
@@ -85,6 +93,10 @@ impl ControlResponse {
             error: Some(message),
             not_running: Some(not_running),
         }
+    }
+
+    pub(super) fn is_token_rejection(&self) -> bool {
+        !self.ok && self.error.as_deref() == Some(INVALID_TOKEN)
     }
 
     pub(super) fn is_not_running(&self) -> bool {

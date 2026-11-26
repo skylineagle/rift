@@ -5,6 +5,7 @@ mod http_sink;
 mod injection;
 mod level;
 mod logger;
+mod queue;
 mod record;
 mod rotation;
 mod sinks;

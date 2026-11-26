@@ -3,15 +3,15 @@ import { toast } from "@yusufceng1z/ding-react";
 import { createStore } from "@/lib/createStore";
 import { errorMessage } from "@/lib/format";
 import * as api from "@/lib/tauriApi";
-import type { RiftEvent } from "@/lib/types";
+import type { RiftEvent, WorkflowEvent } from "@/lib/types";
 import {
   applyWorkflowEvent,
+  reconcileWorkflowRuns,
   runningWorkflowNames,
-  seedWorkflowRuns,
   workflowRunKey,
   type WorkflowRuns,
 } from "@/lib/workflowRuns";
-import { subscribeToEvents } from "@/stores/eventStream";
+import { subscribeToBatches, subscribeToEvents } from "@/stores/eventStream";
 
 export type WorkflowRunState = { runs: WorkflowRuns };
 
@@ -36,23 +36,36 @@ const updateRuns = (update: (runs: WorkflowRuns) => WorkflowRuns) =>
     return runs === state.runs ? state : { runs };
   });
 
-const reportedKeys = new Set<string>();
+let arrivedDuringFetch: WorkflowEvent[] | null = null;
 
 const receive = (event: RiftEvent) => {
   if (event.type !== "workflow") return;
-  reportedKeys.add(workflowRunKey(event.profile, event.workflow));
+  arrivedDuringFetch?.push(event);
   updateRuns((runs) => applyWorkflowEvent(runs, event));
   if (event.state.state === "failed") {
     toast.error(`Workflow ${event.workflow} failed: ${event.state.message}`);
   }
 };
 
-subscribeToEvents(receive);
+const refreshRuns = () => {
+  const arrived: WorkflowEvent[] = [];
+  const fetchStartedAt = Date.now();
+  arrivedDuringFetch = arrived;
+  api
+    .runningWorkflows()
+    .then((statuses) => {
+      if (arrivedDuringFetch !== arrived) return;
+      arrivedDuringFetch = null;
+      updateRuns(() => reconcileWorkflowRuns(statuses, arrived, fetchStartedAt));
+    })
+    .catch(() => undefined);
+};
 
-api
-  .runningWorkflows()
-  .then((statuses) => updateRuns((runs) => seedWorkflowRuns(runs, statuses, reportedKeys)))
-  .catch(() => undefined);
+subscribeToEvents(receive);
+subscribeToBatches((_events, lagged) => {
+  if (lagged > 0) refreshRuns();
+});
+refreshRuns();
 
 const reportError = (error: unknown) => {
   toast.error(errorMessage(error));

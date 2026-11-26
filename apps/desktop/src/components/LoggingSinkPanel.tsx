@@ -1,7 +1,7 @@
 import { useId, type FC, type ReactNode } from "react";
 
 import { Switch } from "@/components/ui/switch";
-import { TabsContent } from "@/components/ui/tabs";
+import { TabsContent } from "@/components/ui/tabs-content";
 import type { Destination } from "@/lib/loggingSettings";
 
 export type LoggingSinkPanelProps = {

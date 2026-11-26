@@ -4,7 +4,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use super::hosts::{self, HostRecord};
-use super::protocol::{ControlRequest, ControlResponse, Envelope, HostStatus, MAX_MESSAGE_BYTES};
+use super::protocol::{
+    ControlRequest, ControlResponse, Envelope, HostStatus, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES,
+    REQUEST_TOO_LARGE,
+};
 use crate::error::{Error, Result};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -24,6 +27,7 @@ pub(super) fn send_in(directory: &Path, request: ControlRequest) -> Result<Contr
     for (path, host) in hosts::read_all(directory)? {
         match exchange(&host, &request) {
             Ok(response) if response.ok => return Ok(response),
+            Ok(response) if response.is_token_rejection() => {}
             Ok(response) if response.is_not_running() => reached_host = true,
             Ok(response) => {
                 return Err(Error::Control(response.error.unwrap_or_default()));
@@ -70,13 +74,13 @@ fn exchange(host: &HostRecord, request: &ControlRequest) -> Result<ControlRespon
         request: request.clone(),
     })
     .map_err(|error| Error::Control(error.to_string()))?;
-    if encoded.len() as u64 >= MAX_MESSAGE_BYTES {
-        return Err(Error::Control("request exceeds 1 MiB".to_string()));
+    if encoded.len() as u64 >= MAX_REQUEST_BYTES {
+        return Err(Error::Control(REQUEST_TOO_LARGE.to_string()));
     }
     encoded.push(b'\n');
     stream.write_all(&encoded)?;
     let mut line = String::new();
-    BufReader::new(stream.take(MAX_MESSAGE_BYTES)).read_line(&mut line)?;
+    BufReader::new(stream.take(MAX_RESPONSE_BYTES)).read_line(&mut line)?;
     serde_json::from_str(&line)
         .map_err(|error| Error::Control(format!("invalid response: {error}")))
 }

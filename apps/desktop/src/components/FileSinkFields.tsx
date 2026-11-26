@@ -6,7 +6,7 @@ import { LogDirectoryField } from "@/components/LogDirectoryField";
 import { LoggingNumberField } from "@/components/LoggingNumberField";
 import { LoggingTextField } from "@/components/LoggingTextField";
 import { SegmentedControl } from "@/components/SegmentedControl";
-import type { FileDraft, LoggingErrors } from "@/lib/loggingSettings";
+import { DEFAULT_LOG_FILE_NAME, type FileDraft, type LoggingErrors } from "@/lib/loggingSettings";
 import type { RotationPolicy } from "@/lib/types";
 
 export type FileSinkFieldsProps = {
@@ -67,6 +67,7 @@ export const FileSinkFields: FC<FileSinkFieldsProps> = ({ file, errors, defaultD
     <AdvancedSection>
       <LoggingTextField
         label="File name"
+        placeholder={DEFAULT_LOG_FILE_NAME}
         value={file.file_name}
         error={errors.fileName}
         onValueChange={(file_name) => onChange({ file_name })}

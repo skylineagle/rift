@@ -5,9 +5,10 @@ use anyhow::{bail, Context, Result};
 
 use crate::ci::{Measurement, Report, Sample};
 use crate::metric::{Metric, METRICS};
-use crate::significance::{holm_adjusted, probability_of_ranking_this_low};
+use crate::significance::{holm_adjusted, probability_of_losses_this_large};
 
 const MISSING: &str = "n/a";
+const MINIMUM_PAIRS: usize = 4;
 
 #[derive(clap::Args)]
 pub struct CompareArguments {
@@ -41,6 +42,8 @@ enum Verdict {
     Passed,
     Regressed,
     Failed,
+    Inconclusive,
+    Skipped,
     Uncompared,
 }
 
@@ -49,19 +52,25 @@ impl Verdict {
         match self {
             Verdict::Passed => "✅ pass",
             Verdict::Regressed => "❌ fail: slower",
-            Verdict::Failed => "❌ fail: did not run",
+            Verdict::Failed => "❌ fail: did not run or deliver",
+            Verdict::Inconclusive => "❌ fail: inconclusive, too few valid pairs",
+            Verdict::Skipped => "⚠️ skipped: base cannot run this case",
             Verdict::Uncompared => "⚠️ n/a",
         }
     }
 
     fn blocks(self) -> bool {
-        matches!(self, Verdict::Regressed | Verdict::Failed)
+        matches!(
+            self,
+            Verdict::Regressed | Verdict::Failed | Verdict::Inconclusive
+        )
     }
 }
 
 struct Comparison {
     base: Option<f64>,
     head: Option<f64>,
+    pairs: Vec<(f64, f64)>,
     probability: Option<f64>,
     verdict: Verdict,
 }
@@ -74,18 +83,64 @@ pub fn run(arguments: CompareArguments) -> Result<()> {
         alpha: arguments.alpha,
     };
     let mut tests = gate.compare_all(&base, &head);
+    let family = family(&tests, arguments.holm);
+    test_pairs(&mut tests, required_pairs(arguments.alpha, family));
     if arguments.holm {
         apply_holm(&mut tests);
     }
     for test in &mut tests {
-        test.comparison.verdict = gate.verdict(test.metric, &test.comparison);
+        test.comparison.verdict = gate.judge(test.metric, &test.comparison);
     }
+    announce_skipped(&tests);
     print_table(&tests, arguments.holm);
-    let failing = failing_case_names(&tests);
+    let failing = case_names(&tests, Verdict::blocks);
     match arguments.failing_cases {
         Some(path) => write_failing_cases(&path, &failing),
         None if failing.is_empty() => Ok(()),
-        None => bail!("{} cases failed or got significantly worse", failing.len()),
+        None => bail!(
+            "{} cases failed, were inconclusive or got significantly worse",
+            failing.len()
+        ),
+    }
+}
+
+fn family(tests: &[Test], holm: bool) -> usize {
+    if !holm {
+        return 1;
+    }
+    tests
+        .iter()
+        .filter(|test| test.comparison.verdict == Verdict::Passed)
+        .count()
+}
+
+fn required_pairs(alpha: f64, family: usize) -> usize {
+    let mut pairs = MINIMUM_PAIRS;
+    while family as f64 / 2f64.powi(pairs as i32) >= alpha {
+        pairs += 1;
+    }
+    pairs
+}
+
+fn test_pairs(tests: &mut [Test], required: usize) {
+    for test in tests
+        .iter_mut()
+        .filter(|test| test.comparison.verdict == Verdict::Passed)
+    {
+        if test.comparison.pairs.len() < required {
+            test.comparison.verdict = Verdict::Inconclusive;
+        } else {
+            let losses = test.metric.losses(&test.comparison.pairs);
+            test.comparison.probability = Some(probability_of_losses_this_large(&losses));
+        }
+    }
+}
+
+fn announce_skipped(tests: &[Test]) {
+    let mut names = case_names(tests, |verdict| verdict == Verdict::Skipped);
+    names.dedup();
+    for name in names {
+        eprintln!("::notice title=Bench case skipped::The base revision cannot run {name}.");
     }
 }
 
@@ -113,10 +168,10 @@ fn print_table(tests: &[Test], holm: bool) {
     }
 }
 
-fn failing_case_names<'a>(tests: &[Test<'a>]) -> Vec<&'a str> {
+fn case_names<'a>(tests: &[Test<'a>], wanted: impl Fn(Verdict) -> bool) -> Vec<&'a str> {
     let mut names: Vec<&str> = tests
         .iter()
-        .filter(|test| test.comparison.verdict.blocks())
+        .filter(|test| wanted(test.comparison.verdict))
         .map(|test| test.case)
         .collect();
     names.dedup();
@@ -145,63 +200,19 @@ impl Gate {
                 tests.push(Test {
                     case: &case.name,
                     metric,
-                    comparison: self.compare(metric, previous, case),
+                    comparison: compare(metric, previous, case),
                 });
             }
         }
         tests
     }
 
-    fn verdict(&self, metric: &Metric, comparison: &Comparison) -> Verdict {
-        if comparison.verdict == Verdict::Failed {
-            return Verdict::Failed;
-        }
-        self.judge(
-            metric,
-            (comparison.base, comparison.head),
-            comparison.probability,
-        )
-    }
-
-    fn compare(
-        &self,
-        metric: &Metric,
-        base: Option<&Measurement>,
-        head: &Measurement,
-    ) -> Comparison {
-        let base_values = base
-            .filter(|case| case.error.is_none())
-            .map_or_else(Vec::new, |case| values(metric, &case.samples));
-        let head_values = values(metric, &head.samples);
-        let medians = (median(&base_values), median(&head_values));
-        let probability = medians
-            .0
-            .zip(medians.1)
-            .map(|_| metric.probability_of_worse(&base_values, &head_values));
-        let verdict = if head.error.is_some() {
-            Verdict::Failed
-        } else {
-            self.judge(metric, medians, probability)
+    fn judge(&self, metric: &Metric, comparison: &Comparison) -> Verdict {
+        let Some(probability) = comparison.probability else {
+            return comparison.verdict;
         };
-        Comparison {
-            base: medians.0,
-            head: medians.1,
-            probability,
-            verdict,
-        }
-    }
-
-    fn judge(
-        &self,
-        metric: &Metric,
-        medians: (Option<f64>, Option<f64>),
-        probability: Option<f64>,
-    ) -> Verdict {
-        let (Some(base), Some(head), Some(probability)) = (medians.0, medians.1, probability)
-        else {
-            return Verdict::Uncompared;
-        };
-        if probability < self.alpha && metric.loss(base, head) > self.threshold {
+        let (base_mean, head_mean) = means(&comparison.pairs);
+        if probability < self.alpha && metric.loss(base_mean, head_mean) > self.threshold {
             Verdict::Regressed
         } else {
             Verdict::Passed
@@ -209,14 +220,45 @@ impl Gate {
     }
 }
 
-impl Metric {
-    fn probability_of_worse(&self, base: &[f64], head: &[f64]) -> f64 {
-        if self.higher_is_better {
-            probability_of_ranking_this_low(head, base)
-        } else {
-            probability_of_ranking_this_low(base, head)
-        }
+fn compare(metric: &Metric, base: Option<&Measurement>, head: &Measurement) -> Comparison {
+    let base_samples = base.map_or(&[][..], |case| &case.samples);
+    let pairs = pairs(metric, base_samples, &head.samples);
+    let verdict = if head.error.is_some() {
+        Verdict::Failed
+    } else if base_samples.is_empty() {
+        Verdict::Skipped
+    } else if is_unmeasured(metric, base_samples) && is_unmeasured(metric, &head.samples) {
+        Verdict::Uncompared
+    } else {
+        Verdict::Passed
+    };
+    Comparison {
+        base: median(&values(metric, base_samples)),
+        head: median(&values(metric, &head.samples)),
+        pairs,
+        probability: None,
+        verdict,
     }
+}
+
+fn pairs(metric: &Metric, base: &[Sample], head: &[Sample]) -> Vec<(f64, f64)> {
+    head.iter()
+        .filter_map(|sample| {
+            let partner = base.iter().find(|other| other.round == sample.round)?;
+            (metric.read)(partner).zip((metric.read)(sample))
+        })
+        .collect()
+}
+
+fn is_unmeasured(metric: &Metric, samples: &[Sample]) -> bool {
+    values(metric, samples).is_empty()
+}
+
+fn means(pairs: &[(f64, f64)]) -> (f64, f64) {
+    let count = pairs.len() as f64;
+    let base: f64 = pairs.iter().map(|pair| pair.0).sum();
+    let head: f64 = pairs.iter().map(|pair| pair.1).sum();
+    (base / count, head / count)
 }
 
 fn values(metric: &Metric, samples: &[Sample]) -> Vec<f64> {
@@ -254,5 +296,61 @@ fn delta(base: Option<f64>, head: Option<f64>) -> String {
     match (base, head) {
         (Some(base), Some(head)) if base > 0.0 => format!("{:+.2}%", (head / base - 1.0) * 100.0),
         _ => MISSING.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn measurement(throughputs: &[(u32, f64)]) -> Measurement {
+        Measurement {
+            name: "case".to_string(),
+            samples: throughputs
+                .iter()
+                .map(|&(round, throughput_mbps)| Sample {
+                    round,
+                    throughput_mbps,
+                    cpu_pct_per_mbps: None,
+                    rss_peak_mb: None,
+                })
+                .collect(),
+            error: None,
+        }
+    }
+
+    #[test]
+    fn pairs_samples_by_round() {
+        let base = measurement(&[(1, 10.0), (3, 30.0)]);
+        let head = measurement(&[(1, 9.0), (2, 19.0), (3, 29.0)]);
+        let comparison = compare(&METRICS[0], Some(&base), &head);
+        assert_eq!(comparison.pairs, [(10.0, 9.0), (30.0, 29.0)]);
+    }
+
+    #[test]
+    fn too_few_pairs_are_inconclusive_and_block() {
+        let base = measurement(&[(1, 10.0)]);
+        let head = measurement(&[(1, 9.0), (2, 9.0)]);
+        let mut tests = [Test {
+            case: "case",
+            metric: &METRICS[0],
+            comparison: compare(&METRICS[0], Some(&base), &head),
+        }];
+        test_pairs(&mut tests, required_pairs(0.05, 1));
+        assert_eq!(tests[0].comparison.verdict, Verdict::Inconclusive);
+        assert!(tests[0].comparison.verdict.blocks());
+    }
+
+    #[test]
+    fn a_case_base_never_ran_is_skipped() {
+        let head = measurement(&[(1, 9.0)]);
+        let comparison = compare(&METRICS[0], Some(&measurement(&[])), &head);
+        assert_eq!(comparison.verdict, Verdict::Skipped);
+    }
+
+    #[test]
+    fn required_pairs_keep_a_total_loss_detectable() {
+        assert_eq!(required_pairs(0.05, 1), 5);
+        assert_eq!(required_pairs(0.05, 8), 8);
     }
 }

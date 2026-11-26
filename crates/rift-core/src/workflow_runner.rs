@@ -66,13 +66,16 @@ impl Workflows {
 
     fn launch(&self, profile: &str, workflow: Workflow, await_sides: bool) -> Result<()> {
         let steps = workflow.prepare()?;
+        let cancellation = self.rift.lifetime_bound_token(profile)?;
         let key = workflow_key(profile, &workflow.name);
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let cancellation = CancellationToken::new();
         {
             let mut registry = self.registry.lock().unwrap();
-            if registry.contains_key(&key) {
-                return Err(Error::WorkflowRunning(workflow.name));
+            if let Some(previous) = registry.get(&key) {
+                if !previous.cancellation.is_cancelled() {
+                    return Err(Error::WorkflowRunning(workflow.name));
+                }
+                publish(&self.rift, &key, WorkflowState::Stopped);
             }
             registry.insert(
                 key.clone(),
@@ -101,7 +104,9 @@ impl Workflows {
                     workflow.repeat,
                     &cancellation,
                     |cycle, step| advance(&rift, &registry, &key, id, cycle, step),
-                    |target, bytes| rift.inject(&key.profile, target, bytes),
+                    |target, bytes| {
+                        send(&rift, &registry, &key.profile, &cancellation, target, bytes)
+                    },
                 )
                 .await
             } else {
@@ -149,6 +154,7 @@ impl Workflows {
             .lock()
             .unwrap()
             .iter()
+            .filter(|(_, running)| !running.cancellation.is_cancelled())
             .map(|(key, running)| WorkflowStatus {
                 profile: key.profile.clone(),
                 workflow: key.workflow.clone(),
@@ -179,6 +185,18 @@ fn advance(rift: &Rift, registry: &Registry, key: &WorkflowKey, id: u64, cycle: 
         running.step = step;
         publish(rift, key, WorkflowState::Step { cycle, step });
     }
+}
+
+fn send(
+    rift: &Rift,
+    registry: &Registry,
+    profile: &str,
+    cancellation: &CancellationToken,
+    target: Target,
+    bytes: Bytes,
+) -> Result<()> {
+    let _stop_blocked = registry.lock().unwrap();
+    rift.inject_unless_cancelled(profile, cancellation, target, bytes)
 }
 
 fn conclude(rift: &Rift, registry: &Registry, key: &WorkflowKey, id: u64, outcome: Outcome) {
@@ -339,6 +357,41 @@ mod tests {
         }
     }
 
+    fn idle_profile(name: &str) -> Profile {
+        let mut profile = Profile {
+            name: name.into(),
+            a: "tcp-server://127.0.0.1:0".parse().unwrap(),
+            b: "tcp-server://127.0.0.1:0".parse().unwrap(),
+            workflows: Vec::new(),
+        };
+        profile.a.enabled = false;
+        profile.b.enabled = false;
+        profile
+    }
+
+    fn running_rift(profiles: &[&str]) -> Arc<Rift> {
+        let rift = Arc::new(Rift::new());
+        for name in profiles {
+            rift.start(idle_profile(name)).unwrap();
+        }
+        rift
+    }
+
+    fn sending(name: &str, delay_millis: u64) -> Workflow {
+        let mut workflow = forever(name, false);
+        workflow.steps = vec![
+            WorkflowStep::Wait {
+                millis: delay_millis,
+            },
+            WorkflowStep::Send {
+                target: Target::A,
+                format: PayloadFormat::Text,
+                payload: "ping".into(),
+            },
+        ];
+        workflow
+    }
+
     fn status(profile: &str, workflow: &str) -> WorkflowStatus {
         WorkflowStatus {
             profile: profile.into(),
@@ -359,7 +412,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn publishes_progress_from_start_to_finish() {
-        let rift = Arc::new(Rift::new());
+        let rift = running_rift(&["gps"]);
         let mut events = rift.subscribe();
         let workflows = Workflows::new(rift);
         let mut twice = forever("twice", false);
@@ -386,7 +439,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_restart_is_never_followed_by_the_old_stop() {
-        let rift = Arc::new(Rift::new());
+        let rift = running_rift(&["gps"]);
         let mut events = rift.subscribe();
         let workflows = Workflows::new(rift);
         workflows.start("gps", forever("beat", false)).unwrap();
@@ -476,7 +529,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn registry_rejects_duplicates_and_stops() {
-        let workflows = Workflows::new(Arc::new(Rift::new()));
+        let workflows = Workflows::new(running_rift(&["gps"]));
         workflows.start("gps", forever("beat", false)).unwrap();
         assert!(matches!(
             workflows.start("gps", forever("beat", false)),
@@ -493,7 +546,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn finished_workflows_leave_the_registry() {
-        let workflows = Workflows::new(Arc::new(Rift::new()));
+        let workflows = Workflows::new(running_rift(&["gps"]));
         let mut once = forever("once", false);
         once.repeat = Some(1);
         workflows.start("gps", once).unwrap();
@@ -502,25 +555,66 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn send_to_a_stopped_profile_ends_the_workflow() {
+    async fn rejects_a_profile_that_is_not_running() {
         let workflows = Workflows::new(Arc::new(Rift::new()));
-        let mut beat = forever("beat", false);
-        beat.steps.insert(
-            0,
-            WorkflowStep::Send {
-                target: Target::A,
-                format: PayloadFormat::Text,
-                payload: "ping".into(),
-            },
-        );
-        workflows.start("gps", beat).unwrap();
-        tokio::time::sleep(Duration::from_millis(1)).await;
+        assert!(matches!(
+            workflows.start("gps", forever("beat", false)),
+            Err(Error::NotRunning(_))
+        ));
         assert!(workflows.running().is_empty());
     }
 
     #[tokio::test(start_paused = true)]
+    async fn stopping_the_profile_ends_a_waiting_workflow() {
+        let rift = running_rift(&["gps"]);
+        let mut events = rift.subscribe();
+        let workflows = Workflows::new(rift.clone());
+        workflows.start("gps", forever("beat", false)).unwrap();
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        rift.stop("gps").await.unwrap();
+        assert!(workflows.running().is_empty());
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        assert_eq!(published(&mut events).last(), Some(&WorkflowState::Stopped));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stale_run_never_sends_to_a_restarted_profile() {
+        let rift = running_rift(&["gps"]);
+        let workflows = Workflows::new(rift.clone());
+        workflows.start("gps", sending("beat", 1000)).unwrap();
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        rift.stop("gps").await.unwrap();
+        rift.start(idle_profile("gps")).unwrap();
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert_eq!(rift.traffic()["gps"].a.injected_bytes, 0);
+        workflows.start("gps", sending("beat", 1000)).unwrap();
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert_eq!(rift.traffic()["gps"].a.injected_bytes, 4);
+        rift.stop_all().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn nothing_is_sent_after_stop_returns() {
+        let rift = running_rift(&["gps"]);
+        let workflows = Workflows::new(rift.clone());
+        for _ in 0..200 {
+            let mut flood = sending("flood", 0);
+            flood.repeat = Some(u32::MAX);
+            flood.steps.remove(0);
+            workflows.start("gps", flood).unwrap();
+            tokio::time::sleep(Duration::from_micros(200)).await;
+            workflows.stop("gps", "flood").unwrap();
+            let sent = rift.traffic()["gps"].a.injected_bytes;
+            tokio::task::yield_now().await;
+            std::thread::sleep(Duration::from_micros(200));
+            assert_eq!(rift.traffic()["gps"].a.injected_bytes, sent);
+        }
+        rift.stop_all().await;
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn autostarts_flagged_workflows_and_stops_by_profile() {
-        let workflows = Workflows::new(Arc::new(Rift::new()));
+        let workflows = Workflows::new(running_rift(&["gps", "other"]));
         let profile = Profile {
             name: "gps".into(),
             a: "tcp://localhost:1".parse().unwrap(),

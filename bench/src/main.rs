@@ -3,6 +3,7 @@ mod channel;
 mod ci;
 mod clock;
 mod compare;
+mod delivery;
 mod flow;
 mod frame;
 mod kind;

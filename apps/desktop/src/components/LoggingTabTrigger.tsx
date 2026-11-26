@@ -1,6 +1,6 @@
 import type { FC } from "react";
 
-import { TabsTrigger } from "@/components/ui/tabs";
+import { TabsTrigger } from "@/components/ui/tabs-trigger";
 import type { Destination } from "@/lib/loggingSettings";
 import { cn } from "@/lib/utils";
 

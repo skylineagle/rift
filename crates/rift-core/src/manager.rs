@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use tokio::sync::broadcast;
+use tokio_util::sync::CancellationToken;
 
 use crate::bridge::{Bridge, BridgeStatus};
 use crate::error::{Error, Result};
@@ -19,6 +20,14 @@ const EVENT_CAPACITY: usize = 4096;
 struct RunningProfile {
     bridge: Arc<Bridge>,
     profile: Profile,
+    lifetime: CancellationToken,
+}
+
+impl RunningProfile {
+    fn end(self) -> Self {
+        self.lifetime.cancel();
+        self
+    }
 }
 
 pub struct Rift {
@@ -65,12 +74,24 @@ impl Rift {
             logger: Some(self.logger.clone()),
         };
         let bridge = Arc::new(Bridge::start_with_outlet(profile.clone(), outlet));
-        bridges.insert(profile.name.clone(), RunningProfile { bridge, profile });
+        bridges.insert(
+            profile.name.clone(),
+            RunningProfile {
+                bridge,
+                profile,
+                lifetime: CancellationToken::new(),
+            },
+        );
         Ok(())
     }
 
     pub async fn stop(&self, name: &str) -> Result<()> {
-        let running = self.bridges.lock().unwrap().remove(name);
+        let running = self
+            .bridges
+            .lock()
+            .unwrap()
+            .remove(name)
+            .map(RunningProfile::end);
         match running {
             Some(running) => {
                 self.stop_running(running).await;
@@ -86,7 +107,7 @@ impl Rift {
             .lock()
             .unwrap()
             .drain()
-            .map(|(_, running)| running)
+            .map(|(_, running)| running.end())
             .collect();
         for running in stopping {
             self.stop_running(running).await;
@@ -130,12 +151,32 @@ impl Rift {
     }
 
     pub fn inject(&self, name: &str, target: Target, bytes: impl Into<Bytes>) -> Result<()> {
+        self.inject_unless_cancelled(name, &CancellationToken::new(), target, bytes)
+    }
+
+    pub(crate) fn inject_unless_cancelled(
+        &self,
+        name: &str,
+        cancellation: &CancellationToken,
+        target: Target,
+        bytes: impl Into<Bytes>,
+    ) -> Result<()> {
         let bridges = self.bridges.lock().unwrap();
         let running = bridges
             .get(name)
+            .filter(|_| !cancellation.is_cancelled())
             .ok_or_else(|| Error::NotRunning(name.to_string()))?;
         running.bridge.inject(target, bytes);
         Ok(())
+    }
+
+    pub(crate) fn lifetime_bound_token(&self, name: &str) -> Result<CancellationToken> {
+        self.bridges
+            .lock()
+            .unwrap()
+            .get(name)
+            .map(|running| running.lifetime.child_token())
+            .ok_or_else(|| Error::NotRunning(name.to_string()))
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
@@ -247,6 +288,30 @@ b = { kind = "tcp-server", bind = "127.0.0.1:0", enabled = false }
         let traffic = rift.traffic()["gps"].a;
         assert_eq!(traffic.injected_bytes, 3);
         assert_eq!(traffic.undelivered_chunks, 1);
+    }
+
+    #[tokio::test]
+    async fn a_token_from_an_earlier_run_never_reaches_a_restarted_profile() {
+        let rift = Rift::new();
+        let profile: Profile = toml::from_str(
+            r#"
+name = "gps"
+a = { kind = "tcp-server", bind = "127.0.0.1:0", enabled = false }
+b = { kind = "tcp-server", bind = "127.0.0.1:0", enabled = false }
+"#,
+        )
+        .unwrap();
+        rift.start(profile.clone()).unwrap();
+        let stale = rift.lifetime_bound_token("gps").unwrap();
+        rift.stop("gps").await.unwrap();
+        rift.start(profile).unwrap();
+        assert!(stale.is_cancelled());
+        assert!(matches!(
+            rift.inject_unless_cancelled("gps", &stale, Target::A, &b"abc"[..]),
+            Err(Error::NotRunning(_))
+        ));
+        assert_eq!(rift.traffic()["gps"].a.injected_bytes, 0);
+        rift.stop_all().await;
     }
 
     #[tokio::test]

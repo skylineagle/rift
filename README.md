@@ -154,6 +154,7 @@ rift workflow stop gps cli-inject                      # stop a repeating inject
 
 Payload words are joined by one space. Put `--` before a payload that starts with `-`.
 `--every` takes `ms`, `s` or `m` and runs as a workflow named `cli-inject`, one at a time per profile.
+A control request is capped at 64 KiB, so send large payloads with the `file` format, which passes only the path.
 
 ### Workflows
 

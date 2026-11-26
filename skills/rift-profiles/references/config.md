@@ -39,7 +39,7 @@ steps = [
 ]
 ```
 
-`autostart` defaults to `false`. Omit `repeat` to loop forever, which needs a `wait` above 0 ms. `target` is `A`, `B` or `Both`; `format` is `text`, `hex`, `binary` or `file`. The `cli-inject` name is used by `rift inject --every`.
+`autostart` defaults to `false`. Omit `repeat` to loop forever, which needs a `wait` above 0 ms. `target` is `A`, `B` or `Both`; `format` is `text`, `hex`, `binary` or `file`. The `cli-inject` name is used by `rift inject --every`. A control request is capped at 64 KiB, so large `rift inject` payloads should use the `file` format.
 
 ## Logging
 
@@ -57,7 +57,7 @@ format = "text"             # text | json, written to stderr
 [logging.file]
 enabled = true
 directory = "/var/log/rift" # omit for <OS local data dir>/rift/logs
-file_name = "rift.log"
+file_name = "rift.log"      # omit for rift-cli.log (CLI) or rift-desktop.log (desktop)
 rotate = "size"             # size | hourly | daily
 max_file_bytes = 10485760
 max_files = 10              # rotated files kept, 0 = unlimited

@@ -5,7 +5,8 @@ import { FileSinkFields } from "@/components/FileSinkFields";
 import { HttpSinkFields } from "@/components/HttpSinkFields";
 import { LoggingSinkPanel } from "@/components/LoggingSinkPanel";
 import { LoggingTabTrigger } from "@/components/LoggingTabTrigger";
-import { Tabs, TabsList } from "@/components/ui/tabs";
+import { Tabs } from "@/components/ui/tabs";
+import { TabsList } from "@/components/ui/tabs-list";
 import { hasDestinationError, type LoggingDraft, type LoggingErrors } from "@/lib/loggingSettings";
 
 export type LoggingDestinationTabsProps = {

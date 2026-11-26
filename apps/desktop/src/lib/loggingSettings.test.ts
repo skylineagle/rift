@@ -98,5 +98,20 @@ describe("logging settings", () => {
     expect(hasEnabledSink(config)).toBe(false);
     expect(hasEnabledSink({ ...config, console: { enabled: true, format: "json" } })).toBe(true);
     expect(logFilePaths(config, "/var/logs/").current).toBe("/var/logs/rift.log");
+    const unnamed = { ...config, file: { ...config.file, file_name: "" } };
+    expect(logFilePaths(unnamed, "/var/logs").current).toBe("/var/logs/rift-desktop.log");
+  });
+
+  test("allows an empty file name and saves it empty", () => {
+    const draft = toDraft(config);
+    const enabled = { ...draft, file: { ...draft.file, enabled: true, file_name: "  " } };
+    expect(validateDraft(enabled).fileName).toBeUndefined();
+    expect(toConfig(enabled, config).file.file_name).toBe("");
+  });
+
+  test("rejects slashes in the file name", () => {
+    const draft = toDraft(config);
+    const nested = { ...draft, file: { ...draft.file, enabled: true, file_name: "logs/rift.log" } };
+    expect(validateDraft(nested).fileName).toBe("Enter a file name without slashes");
   });
 });

@@ -23,6 +23,14 @@ pub const METRICS: [Metric; 2] = [
 ];
 
 impl Metric {
+    pub fn losses(&self, pairs: &[(f64, f64)]) -> Vec<f64> {
+        let direction = if self.higher_is_better { 1.0 } else { -1.0 };
+        pairs
+            .iter()
+            .map(|(base, head)| (base - head) * direction)
+            .collect()
+    }
+
     pub fn loss(&self, base: f64, head: f64) -> f64 {
         let change = (head - base) / base;
         if self.higher_is_better {

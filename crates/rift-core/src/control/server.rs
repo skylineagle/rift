@@ -5,11 +5,14 @@ use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 use super::hosts::{self, HostRecord};
-use super::protocol::{ControlResponse, Envelope, MAX_MESSAGE_BYTES};
+use super::protocol::{
+    ControlResponse, Credentials, Envelope, INVALID_TOKEN, MAX_REQUEST_BYTES, REQUEST_TOO_LARGE,
+};
 use crate::error::{Error, Result};
 use crate::manager::Rift;
 use crate::profile::Profile;
@@ -17,7 +20,9 @@ use crate::workflow_runner::Workflows;
 
 mod dispatch;
 
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_CONNECTIONS: usize = 16;
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 pub type ProfileLookup = Arc<dyn Fn(&str) -> Option<Profile> + Send + Sync>;
@@ -94,6 +99,7 @@ async fn accept_connections(
     context: Arc<Context>,
     shutdown: CancellationToken,
 ) {
+    let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     loop {
         let accepted = tokio::select! {
             _ = shutdown.cancelled() => return,
@@ -101,9 +107,13 @@ async fn accept_connections(
         };
         match accepted {
             Ok((stream, _)) => {
+                let Ok(slot) = slots.clone().try_acquire_owned() else {
+                    continue;
+                };
                 let context = context.clone();
                 tokio::spawn(async move {
-                    let _ = timeout(REQUEST_TIMEOUT, serve_connection(stream, &context)).await;
+                    let _ = serve_connection(stream, &context).await;
+                    drop(slot);
                 });
             }
             Err(_) => tokio::time::sleep(ACCEPT_RETRY_DELAY).await,
@@ -112,39 +122,53 @@ async fn accept_connections(
 }
 
 async fn serve_connection(mut stream: TcpStream, context: &Context) -> Result<()> {
-    let line = read_request_line(&mut stream).await?;
+    let line = timeout(REQUEST_TIMEOUT, read_request_line(&mut stream))
+        .await
+        .map_err(|_| Error::Control("request timed out".to_string()))??;
     let response = respond(context, &line);
+    timeout(RESPONSE_TIMEOUT, write_response(&mut stream, &response))
+        .await
+        .map_err(|_| Error::Control("response timed out".to_string()))?
+}
+
+async fn read_request_line(stream: &mut TcpStream) -> Result<Vec<u8>> {
+    let mut line = Vec::new();
+    BufReader::new(stream.take(MAX_REQUEST_BYTES + 1))
+        .read_until(b'\n', &mut line)
+        .await?;
+    Ok(line)
+}
+
+async fn write_response(stream: &mut TcpStream, response: &ControlResponse) -> Result<()> {
     let mut encoded =
-        serde_json::to_vec(&response).map_err(|error| Error::Control(error.to_string()))?;
+        serde_json::to_vec(response).map_err(|error| Error::Control(error.to_string()))?;
     encoded.push(b'\n');
     stream.write_all(&encoded).await?;
     stream.shutdown().await?;
     Ok(())
 }
 
-async fn read_request_line(stream: &mut TcpStream) -> Result<Vec<u8>> {
-    let mut line = Vec::new();
-    BufReader::new(stream.take(MAX_MESSAGE_BYTES + 1))
-        .read_until(b'\n', &mut line)
-        .await?;
-    Ok(line)
-}
-
 fn respond(context: &Context, line: &[u8]) -> ControlResponse {
-    if line.len() as u64 > MAX_MESSAGE_BYTES {
-        return ControlResponse::rejection("request exceeds 1 MiB".to_string(), false);
+    if line.len() as u64 > MAX_REQUEST_BYTES {
+        return ControlResponse::rejection(REQUEST_TOO_LARGE.to_string(), false);
+    }
+    match serde_json::from_slice::<Credentials>(line) {
+        Ok(credentials) if credentials.token != context.token => {
+            return ControlResponse::rejection(INVALID_TOKEN.to_string(), true)
+        }
+        Ok(_) => {}
+        Err(error) => return invalid_request(error),
     }
     let envelope: Envelope = match serde_json::from_slice(line) {
         Ok(envelope) => envelope,
-        Err(error) => {
-            return ControlResponse::rejection(format!("invalid request: {error}"), false)
-        }
+        Err(error) => return invalid_request(error),
     };
-    if envelope.token != context.token {
-        return ControlResponse::rejection("invalid token".to_string(), true);
-    }
     match dispatch::dispatch(context, envelope.request) {
         Ok(data) => ControlResponse::success(data),
         Err(error) => ControlResponse::failure(&error),
     }
+}
+
+fn invalid_request(error: serde_json::Error) -> ControlResponse {
+    ControlResponse::rejection(format!("invalid request: {error}"), false)
 }

@@ -4,10 +4,13 @@ use super::config::LoggingConfig;
 use super::console_sink::ConsoleSink;
 use super::file_sink::FileSink;
 use super::http_sink::HttpSink;
+use super::level::LogLevel;
+use super::queue::dropped_record;
 use super::record::LogRecord;
 
 #[derive(Default)]
 pub(super) struct Sinks {
+    default_file_name: String,
     config: LoggingConfig,
     console: Option<ConsoleSink>,
     file: Option<FileSink>,
@@ -15,8 +18,11 @@ pub(super) struct Sinks {
 }
 
 impl Sinks {
-    pub fn new(config: LoggingConfig) -> Self {
-        let mut sinks = Self::default();
+    pub fn new(config: LoggingConfig, default_file_name: String) -> Self {
+        let mut sinks = Self {
+            default_file_name,
+            ..Self::default()
+        };
         sinks.configure(config);
         sinks
     }
@@ -29,7 +35,10 @@ impl Sinks {
                 .then(|| ConsoleSink::new(&config.console));
         }
         if self.config.file != config.file || self.file.is_none() {
-            self.file = config.file.enabled.then(|| FileSink::new(&config.file));
+            self.file = config
+                .file
+                .enabled
+                .then(|| FileSink::new(&config.file.named(&self.default_file_name)));
         }
         if self.config.http != config.http || self.http.is_none() {
             self.http = config.http.enabled.then(|| HttpSink::new(&config.http));
@@ -46,6 +55,12 @@ impl Sinks {
         }
         if let Some(http) = &mut self.http {
             http.write(record);
+        }
+    }
+
+    pub fn write_dropped(&mut self, count: u64) {
+        if self.config.level <= LogLevel::Warn {
+            self.write(&dropped_record(count));
         }
     }
 
@@ -72,7 +87,7 @@ mod tests {
     #[test]
     fn reconfigure_adds_and_removes_sinks() {
         let mut config = LoggingConfig::default();
-        let mut sinks = Sinks::new(config.clone());
+        let mut sinks = Sinks::new(config.clone(), "rift.log".into());
         assert!(sinks.console.is_none() && sinks.file.is_none() && sinks.http.is_none());
         config.console.enabled = true;
         config.http.enabled = true;

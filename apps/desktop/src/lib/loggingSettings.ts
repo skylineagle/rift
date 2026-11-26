@@ -47,6 +47,8 @@ const DESTINATION_FIELDS: Record<Destination, LoggingField[]> = {
 
 export const bytesToMegabytes = (bytes: number) => bytes / BYTES_PER_MEGABYTE;
 
+export const DEFAULT_LOG_FILE_NAME = "rift-desktop.log";
+
 export const megabytesToBytes = (megabytes: number) => Math.round(megabytes * BYTES_PER_MEGABYTE);
 
 export const toDraft = ({ level, stats_interval_secs, console, file, http }: LoggingConfig): LoggingDraft => ({
@@ -92,7 +94,7 @@ export const toConfig = (draft: LoggingDraft, saved: LoggingConfig): LoggingConf
     file: {
       enabled: file.enabled,
       directory: file.directory,
-      file_name: file.file_name.trim() || saved.file.file_name,
+      file_name: file.file_name.trim(),
       rotate: file.rotate,
       max_file_bytes:
         file.maxFileMegabytes !== null && file.maxFileMegabytes > 0
@@ -129,9 +131,8 @@ const headersError = (rows: HeaderRow[]) => {
 };
 
 const fileErrors = (file: FileDraft): LoggingErrors => {
-  const name = file.file_name.trim();
   return {
-    fileName: !name || /[/\\]/.test(name) ? "Enter a file name without slashes" : undefined,
+    fileName: /[/\\]/.test(file.file_name.trim()) ? "Enter a file name without slashes" : undefined,
     maxFileSize:
       file.rotate === "size" && !isPositive(file.maxFileMegabytes) ? "Must be above 0" : undefined,
     maxFiles: isWholeAtLeast(file.maxFiles, 0) ? undefined : "Whole number, 0 or more",
@@ -180,5 +181,5 @@ export const hasEnabledSink = (config: LoggingConfig | null) =>
 
 export const logFilePaths = ({ file }: LoggingConfig, defaultDirectory: string) => {
   const directory = file.directory ?? defaultDirectory;
-  return { directory, current: `${directory.replace(/[/\\]$/, "")}/${file.file_name}` };
+  return { directory, current: `${directory.replace(/[/\\]$/, "")}/${file.file_name || DEFAULT_LOG_FILE_NAME}` };
 };

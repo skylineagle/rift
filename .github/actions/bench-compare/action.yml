@@ -56,7 +56,7 @@ runs:
           printf 'No case failed the first pass.\n\n' >> "$GITHUB_STEP_SUMMARY"
           exit 0
         fi
-        bench/target/release/rift-bench "$OPTION" "$HEAD" ci --out "$stage" --rounds 7 --seconds 2 --cases "$first/failing.txt" "--base-${OPTION#--}" "$BASE"
+        bench/target/release/rift-bench "$OPTION" "$HEAD" ci --out "$stage" --rounds 10 --seconds 2 --cases "$first/failing.txt" "--base-${OPTION#--}" "$BASE"
         bench/target/release/rift-bench compare --base "$stage/base.json" --head "$stage/head.json" --holm | tee -a "$GITHUB_STEP_SUMMARY"
     - name: Report skipped comparison
       if: ${{ !cancelled() && inputs.base == '' }}

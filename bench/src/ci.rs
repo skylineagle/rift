@@ -6,8 +6,11 @@ use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::case::{run_case, CaseResult};
+use crate::delivery;
 use crate::rift::RiftCommand;
 use crate::scenarios::{Scenario, SCENARIOS};
+
+const ATTEMPTS: u32 = 3;
 
 #[derive(clap::Args)]
 pub struct CiArguments {
@@ -64,6 +67,7 @@ pub struct Measurement {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Sample {
+    pub round: u32,
     pub throughput_mbps: f64,
     pub cpu_pct_per_mbps: Option<f64>,
     pub rss_peak_mb: Option<f64>,
@@ -132,15 +136,10 @@ fn measure_interleaved(
         contender.report.cases.push(Measurement::new(scenario.name));
     }
     for round in 1..=rounds {
-        for contender in contenders.iter_mut() {
-            let result = run_case(&contender.rift, "ci", &scenario.config(duration));
-            let outcome = sample(&result);
-            eprintln!(
-                "{} [{round}/{rounds}] {} {}",
-                scenario.name,
-                contender.label,
-                describe(&outcome)
-            );
+        for position in order(contenders.len(), round) {
+            let contender = &mut contenders[position];
+            let label = format!("{} [{round}/{rounds}] {}", scenario.name, contender.label);
+            let outcome = measure_with_retries(&contender.rift, scenario, duration, round, &label);
             if let Some(measurement) = contender.report.cases.last_mut() {
                 measurement.record(outcome);
             }
@@ -148,12 +147,47 @@ fn measure_interleaved(
     }
 }
 
-fn sample(result: &CaseResult) -> Result<Sample, String> {
+fn order(count: usize, round: u32) -> Vec<usize> {
+    let mut positions: Vec<usize> = (0..count).collect();
+    if round.is_multiple_of(2) {
+        positions.reverse();
+    }
+    positions
+}
+
+fn measure_with_retries(
+    rift: &RiftCommand,
+    scenario: &Scenario,
+    duration: Duration,
+    round: u32,
+    label: &str,
+) -> Result<Sample, String> {
+    retry(ATTEMPTS, || {
+        let result = run_case(rift, "ci", &scenario.config(duration));
+        let outcome = sample(&result, round);
+        eprintln!("{label} {}", describe(&outcome));
+        outcome
+    })
+}
+
+fn retry<T, E>(attempts: u32, mut attempt: impl FnMut() -> Result<T, E>) -> Result<T, E> {
+    let mut outcome = attempt();
+    for _ in 1..attempts {
+        if outcome.is_ok() {
+            break;
+        }
+        outcome = attempt();
+    }
+    outcome
+}
+
+fn sample(result: &CaseResult, round: u32) -> Result<Sample, String> {
     if let Some(error) = failure(result) {
         return Err(error);
     }
-    let throughput_mbps: f64 = result.flows.iter().map(|flow| flow.goodput_mbps).sum();
+    let throughput_mbps = delivery::check(result)?;
     Ok(Sample {
+        round,
         throughput_mbps,
         cpu_pct_per_mbps: result
             .rift
@@ -200,4 +234,26 @@ fn fail_on_errors(report: &Report) -> Result<()> {
         bail!("{failed} ci cases failed on head");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rounds_alternate_which_side_runs_first() {
+        assert_eq!(order(2, 1), [0, 1]);
+        assert_eq!(order(2, 2), [1, 0]);
+    }
+
+    #[test]
+    fn a_failed_round_is_retried_twice() {
+        let mut calls = 0;
+        let outcome: Result<(), ()> = retry(ATTEMPTS, || {
+            calls += 1;
+            Err(())
+        });
+        assert!(outcome.is_err());
+        assert_eq!(calls, 3);
+    }
 }

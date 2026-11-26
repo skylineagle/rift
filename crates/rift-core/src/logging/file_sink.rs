@@ -135,6 +135,7 @@ mod tests {
         FileSinkConfig {
             enabled: true,
             directory: Some(directory.to_path_buf()),
+            file_name: "rift.log".into(),
             ..FileSinkConfig::default()
         }
     }

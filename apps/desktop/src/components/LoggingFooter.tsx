@@ -4,7 +4,7 @@ import { FolderOpen } from "lucide-react";
 import type { FC } from "react";
 
 import { Button } from "@/components/ui/button";
-import { DialogClose } from "@/components/ui/dialog";
+import { DialogClose } from "@/components/ui/dialog-close";
 import { errorMessage } from "@/lib/format";
 import { logFilePaths } from "@/lib/loggingSettings";
 import type { LoggingConfig } from "@/lib/types";

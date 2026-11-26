@@ -1,13 +1,15 @@
 use std::collections::VecDeque;
 use std::io::Write;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use super::config::{HttpFormat, HttpSinkConfig};
+use super::queue::{self, dropped_record, Inbox, Outbox, Received};
 use super::record::LogRecord;
 
 const BUFFER_CAPACITY: usize = 10_000;
+const FLUSH_DELIVERY_TIMEOUT: Duration = Duration::from_secs(1);
 
 enum Command {
     Record(String),
@@ -15,23 +17,24 @@ enum Command {
 }
 
 pub(super) struct HttpSink {
-    commands: Sender<Command>,
+    commands: Outbox<Command>,
 }
 
 impl HttpSink {
     pub fn new(config: &HttpSinkConfig) -> Self {
-        let (commands, received) = mpsc::channel();
+        let (commands, received) = queue::bounded(BUFFER_CAPACITY);
         let worker = Worker::new(config.clone());
         thread::spawn(move || worker.run(received));
         Self { commands }
     }
 
     pub fn write(&mut self, record: &LogRecord) {
-        let _ = self.commands.send(Command::Record(record.to_json()));
+        self.commands.offer(Command::Record(record.to_json()));
     }
 
     pub fn flush(&mut self, done: Sender<()>) {
-        let _ = self.commands.send(Command::Flush(done));
+        self.commands
+            .deliver(Command::Flush(done), FLUSH_DELIVERY_TIMEOUT);
     }
 }
 
@@ -96,23 +99,22 @@ impl Worker {
         }
     }
 
-    fn run(mut self, commands: Receiver<Command>) {
+    fn run(mut self, commands: Inbox<Command>) {
         let interval = Duration::from_secs(self.config.flush_interval_secs.max(1));
         let mut deadline = Instant::now() + interval;
         loop {
-            match commands.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-                Ok(Command::Record(record)) => {
-                    self.buffer.push(record);
-                    if !self.failing && self.buffer.len() >= self.batch_size() {
-                        self.send_batch();
+            match commands.receive(deadline.saturating_duration_since(Instant::now())) {
+                Received::Item(Command::Record(record)) => self.accept(record),
+                Received::Item(Command::Flush(done)) => {
+                    if let Some(count) = commands.take_dropped() {
+                        self.accept(dropped_record(count).to_json());
                     }
-                }
-                Ok(Command::Flush(done)) => {
                     self.send_all();
                     let _ = done.send(());
                 }
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => break,
+                Received::Dropped(count) => self.accept(dropped_record(count).to_json()),
+                Received::TimedOut => {}
+                Received::Closed => break,
             }
             if Instant::now() >= deadline {
                 self.send_all();
@@ -120,6 +122,13 @@ impl Worker {
             }
         }
         self.send_all();
+    }
+
+    fn accept(&mut self, record: String) {
+        self.buffer.push(record);
+        if !self.failing && self.buffer.len() >= self.batch_size() {
+            self.send_batch();
+        }
     }
 
     fn batch_size(&self) -> usize {
@@ -163,6 +172,7 @@ impl Worker {
 mod tests {
     use std::io::{BufRead, BufReader, Read};
     use std::net::TcpListener;
+    use std::sync::mpsc;
 
     use super::*;
 

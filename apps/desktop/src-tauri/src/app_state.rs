@@ -24,7 +24,7 @@ impl AppState {
     }
 
     pub fn new(store: ProfileStore, config_path: PathBuf) -> Result<Self> {
-        let logger = Logger::new(store.section("logging")?);
+        let logger = Logger::with_default_file_name(store.section("logging")?, "rift-desktop.log");
         let rift = Arc::new(Rift::with_logger(logger));
         Ok(Self {
             workflows: Arc::new(Workflows::new(rift.clone())),

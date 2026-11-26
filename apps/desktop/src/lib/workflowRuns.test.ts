@@ -1,7 +1,12 @@
 import { expect, test } from "bun:test";
 
 import type { WorkflowEvent, WorkflowState } from "@/lib/types";
-import { applyWorkflowEvent, runningWorkflowNames, seedWorkflowRuns } from "@/lib/workflowRuns";
+import {
+  applyWorkflowEvent,
+  reconcileWorkflowRuns,
+  runningWorkflowNames,
+  workflowRunKey,
+} from "@/lib/workflowRuns";
 
 const event = (state: WorkflowState, workflow = "heartbeat"): WorkflowEvent => ({
   type: "workflow",
@@ -13,9 +18,9 @@ const event = (state: WorkflowState, workflow = "heartbeat"): WorkflowEvent => (
 
 test("started and step set progress", () => {
   const started = applyWorkflowEvent({}, event({ state: "started" }));
-  expect(started["gps:heartbeat"]).toMatchObject({ cycle: 1, step: 0 });
+  expect(started[workflowRunKey("gps", "heartbeat")]).toMatchObject({ cycle: 1, step: 0 });
   const stepped = applyWorkflowEvent(started, event({ state: "step", cycle: 3, step: 2 }));
-  expect(stepped["gps:heartbeat"]).toMatchObject({ cycle: 3, step: 2 });
+  expect(stepped[workflowRunKey("gps", "heartbeat")]).toMatchObject({ cycle: 3, step: 2 });
 });
 
 test("every ending removes the run and unknown runs keep the same reference", () => {
@@ -32,13 +37,25 @@ test("every ending removes the run and unknown runs keep the same reference", ()
   expect(applyWorkflowEvent(empty, event({ state: "stopped" }))).toBe(empty);
 });
 
-test("seeding never overrides what events already reported", () => {
+test("keys never collide across profile and workflow names", () => {
+  expect(workflowRunKey("a:b", "c")).not.toBe(workflowRunKey("a", "b:c"));
+});
+
+test("reconciling replaces stale runs and replays only events since the fetch began", () => {
   const status = { profile: "gps", cycle: 2, step: 1 };
-  const runs = seedWorkflowRuns(
-    {},
-    [{ ...status, workflow: "ended" }, { ...status, workflow: "quiet" }],
-    new Set(["gps:ended"]),
+  const at = (milliseconds: number, state: WorkflowState, workflow: string) => ({
+    ...event(state, workflow),
+    timestamp: new Date(milliseconds).toISOString(),
+  });
+  const runs = reconcileWorkflowRuns(
+    [{ ...status, workflow: "ending" }, { ...status, workflow: "quiet" }],
+    [
+      at(900, { state: "stopped" }, "quiet"),
+      at(1100, { state: "finished" }, "ending"),
+      at(1200, { state: "started" }, "fresh"),
+    ],
+    1000,
   );
-  expect(runningWorkflowNames(runs, "gps")).toEqual(["quiet"]);
+  expect(runningWorkflowNames(runs, "gps")).toEqual(["quiet", "fresh"]);
   expect(runningWorkflowNames(runs, "g")).toEqual([]);
 });

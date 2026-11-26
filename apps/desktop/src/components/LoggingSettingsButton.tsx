@@ -4,7 +4,9 @@ import { useState, type FC } from "react";
 
 import { LoggingSettingsDialog } from "@/components/LoggingSettingsDialog";
 import { TooltipButton } from "@/components/TooltipButton";
-import { Dialog, DialogContent, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog } from "@/components/ui/dialog";
+import { DialogContent } from "@/components/ui/dialog-content";
+import { DialogTrigger } from "@/components/ui/dialog-trigger";
 import { useStore } from "@/hooks/useStore";
 import { errorMessage } from "@/lib/format";
 import { hasEnabledSink } from "@/lib/loggingSettings";
