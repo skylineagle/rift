@@ -1,0 +1,184 @@
+---
+title: Tauri backend
+description: How src-tauri hosts the engine, the command surface, event batching, CLI PATH linking, the updater and the headless entry used by benchmarks.
+---
+
+The backend is the `rift-desktop` crate in `apps/desktop/src-tauri`. Its library is `rift_desktop_lib`. `main.rs` only calls `rift_desktop_lib::run()`.
+
+## Files
+
+| File | Job |
+| --- | --- |
+| `lib.rs` | Builds the Tauri app, registers plugins and commands, runs shutdown on exit. |
+| `app_state.rs` | `AppState`: `Rift`, `Workflows`, the `ProfileStore`, config path and control server. |
+| `runtime.rs` | Starts the logger watcher, control server and event forwarding. |
+| `commands.rs` | Tauri commands for profiles, injection, ports, import and export. |
+| `workflow_commands.rs` | Tauri commands for workflows. |
+| `logging_commands.rs` | Tauri commands for logging config. |
+| `profile_lifecycle.rs` | `start`, `stop`, `shut_down` with workflow handling. |
+| `profile_logging.rs` | Builds `profile.added`, `updated`, `renamed`, `removed` log records. |
+| `event_forwarder.rs` | Subscribes to engine events and sends batches over a Tauri channel. |
+| `event_batch.rs` | The batch type and its binary encoding. |
+| `cli_link.rs` | macOS only. Links the bundled CLI into the PATH. |
+| `headless.rs` | A GUI-free `pipe` entry point, used by benchmarks. |
+
+## Hosting the engine
+
+`AppState` is the Tauri managed state:
+
+```rust
+pub struct AppState {
+    pub rift: Arc<Rift>,
+    pub workflows: Arc<Workflows>,
+    pub store: Arc<Mutex<ProfileStore>>,
+    pub config_path: PathBuf,
+    control_server: Mutex<Option<ControlServer>>,
+}
+```
+
+`AppState::load()` resolves the config path with `resolve_config_path(None)`, loads the store with `load_or_default`, and builds a `Logger` from the `logging` section with default file name `rift-desktop.log`. Because the CLI and the app share the config path, `rift profile add` in a terminal shows up in the app next time the list is loaded.
+
+`lib.rs` setup:
+
+```rust
+.setup(|app| {
+    #[cfg(target_os = "macos")]
+    cli_link::link_bundled_cli();
+    let state = AppState::load()?;
+    let sink = runtime::start(&state);
+    app.manage(state);
+    app.manage(sink);
+    Ok(())
+})
+```
+
+`runtime::start` does three things: spawns `Logger::watch` on Tauri's async runtime, starts the control server (kind `"desktop"`) and creates the `EventSink` with `forward_events` attached to `rift.subscribe()`.
+
+The lookup closure passed to the `ControlServer` reads from `store`, so `rift workflow start` sees profiles and workflows you edited in the UI. See [Control socket](/docs/developer/core/control-socket).
+
+On exit, `RunEvent::Exit` runs `profile_lifecycle::shut_down`. It stops the control server, stops every workflow, calls `stop_all` with a 3 second timeout, waits 100 ms, then flushes the logger.
+
+## Commands
+
+All commands are registered in one `tauri::generate_handler!` list in `lib.rs`. The frontend calls them through `apps/desktop/src/lib/tauriApi.ts`.
+
+| Group | Commands |
+| --- | --- |
+| Events | `subscribe_events` |
+| Profiles | `list_profiles`, `save_profile`, `delete_profile`, `start_profile`, `stop_profile`, `restart_profile`, `set_side_enabled`, `running_profiles`, `bridge_status` |
+| Config import | `prepare_config_import`, `import_config`, `read_config_file` |
+| Data | `inject`, `preview_payload` |
+| System | `list_ports`, `export_log` |
+| Logging | `get_logging_config`, `save_logging_config`, `default_log_directory` |
+| Workflows | `start_workflow`, `stop_workflow`, `running_workflows`, `validate_workflow` |
+
+Commands return `rift_core::Result<T>`. `Error` serializes as its message string, so a rejected `invoke` promise carries readable text.
+
+Notes on specific commands:
+
+- `save_profile(previous_name, profile)` upserts into the store and writes the file. It does not touch a running bridge. The record logged is `profile.added`, `updated` or `renamed`.
+- `start_profile` loads the stored profile and calls `profile_lifecycle::start`, which calls `Rift::start` then `start_autostart`.
+- `set_side_enabled(name, side, true)` re-reads the stored profile and calls `Rift::configure_side` with the stored side config. That is how an edited endpoint takes effect without restarting the other side. `enabled = false` calls `Rift::set_side_enabled`.
+- `import_config` runs `prepare_config_import` under the store lock, then `import_atomic`.
+- `read_config_file` reads at most 1 MiB plus one byte, so oversized files fail before parsing.
+- `inject` takes strings for target and format and parses them with the same `FromStr` impls the CLI uses.
+
+## Event batching
+
+The engine can publish thousands of events per second. Sending each over IPC and re-rendering for each would freeze the UI. `event_forwarder.rs` batches them:
+
+```rust
+const FLUSH_INTERVAL: Duration = Duration::from_millis(50);
+
+pub fn forward_events(sink: EventSink, mut events: Receiver<Event>) {
+    tauri::async_runtime::spawn(async move {
+        let mut flush = tokio::time::interval(FLUSH_INTERVAL);
+        let mut batch = EventBatch::default();
+        loop {
+            tokio::select! {
+                received = events.recv() => match received {
+                    Ok(event) => batch.push(event),
+                    Err(RecvError::Lagged(missed)) => batch.lagged(missed),
+                    Err(RecvError::Closed) => break,
+                },
+                _ = flush.tick() => {
+                    if !batch.is_empty() { sink.send(std::mem::take(&mut batch)); }
+                }
+            }
+        }
+    });
+}
+```
+
+`EventSink` holds the Tauri `Channel<InvokeResponseBody>` that the frontend attached through `subscribe_events`. Until it attaches, batches are discarded.
+
+### Batch limits
+
+`EventBatch` (`event_batch.rs`) bounds one batch:
+
+```rust
+const MAX_ROWS: usize = 500;
+const MAX_PAYLOAD_BYTES: usize = 4 << 20;
+```
+
+When a batch exceeds either limit, `skip_oldest_data` removes the oldest `Data` event and folds it into a `Skipped` summary keyed by profile, source, target, origin and delivered. A summary keeps a chunk count and byte length, not the bytes. Status, dropped and workflow events are never removed. A burst therefore degrades to counts but never loses a state change.
+
+### Wire format
+
+`encode()` builds a binary frame so payload bytes do not go through JSON:
+
+```text
+[ u32 little-endian: header length ][ header JSON ][ payload bytes, concatenated ]
+```
+
+The header is:
+
+```rust
+struct Header { rows: Vec<Row>, skipped: Vec<Skipped>, lagged: u64 }
+struct Row { event: Event, length: usize }
+```
+
+For each `Data` event, the bytes are moved out of the event into the payload section and `length` records how many bytes to read. The frontend decoder (`lib/eventBatch.ts`) walks `rows` and slices the payload in order. A unit test `frame_is_header_length_then_header_then_payloads` pins the layout.
+
+## CLI on the PATH
+
+The release build bundles the CLI as a Tauri sidecar: `tauri.release.conf.json` sets `"externalBin": ["binaries/rift"]`. The release workflow builds `rift-cli` first and copies it to `apps/desktop/src-tauri/binaries/rift-<target>`.
+
+| OS | How `rift` reaches the PATH |
+| --- | --- |
+| macOS | `cli_link::link_bundled_cli()` runs at setup. |
+| Windows | NSIS hooks in `windows/hooks.nsh` add the install directory to the user PATH after install, and remove it after uninstall. |
+| Linux `.deb`, `.rpm` | Installed under `/usr/bin` by the package. |
+| Linux AppImage | Not installed. |
+
+`cli_link.rs` finds `rift` next to the app executable. For each candidate directory (`/usr/local/bin`, then `$HOME/.local/bin`) it stops if `rift` already exists there, otherwise it creates the directory and a symlink and stops on success. It never overwrites something that is already there. All errors are ignored: a failed link must not stop the app.
+
+`InstallSource::detect` in the CLI recognises the `.app/Contents/` path, so `rift update` run from the linked binary tells the user to update the app instead.
+
+## Updater
+
+The app uses `tauri-plugin-updater` and `tauri-plugin-process`. `tauri.conf.json` sets the signing public key and the endpoint:
+
+```text
+https://github.com/skylineagle/rift/releases/latest/download/latest.json
+```
+
+`tauri.updater.conf.json` sets `createUpdaterArtifacts: true`. The release workflow only applies it when the `TAURI_SIGNING_PRIVATE_KEY` secret exists (see [Building and release](/docs/developer/building-and-release)). The capability file (`capabilities/default.json`) grants `updater:default` and `process:allow-restart`.
+
+The check and install logic is in the frontend, `stores/updateStore.ts`: it checks every 6 hours outside dev mode, downloads in the background, shows a pill when ready, and relaunches after install.
+
+## Headless entry
+
+`headless.rs` and `examples/headless.rs` run the same `AppState` and `runtime::start` without opening a window. `headless::pipe(name, a, b)` attaches a no-op channel, starts one profile and prints lifecycle events as JSON lines. The benchmark CI builds this example (`cargo build --release -p rift-desktop --example headless`) so it can measure the desktop host's engine path with the same harness as the CLI.
+
+## Tests
+
+Backend tests are unit tests inside the source files:
+
+- `event_batch.rs`: caps and frame layout.
+- `profile_lifecycle.rs`: start runs autostart workflows, stop ends them, shutdown stops all.
+- `profile_logging.rs`: record names.
+- `workflow_commands.rs`: only running profiles can start stored workflows.
+- `logging_commands.rs`: applied config is persisted and active.
+
+They build an `AppState` with `ProfileStore` parsed from TOML and `tauri::async_runtime::block_on`.

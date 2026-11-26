@@ -1,0 +1,86 @@
+---
+title: Container
+description: Run Rift with Docker or Docker Compose, publish ports, and pass a serial device through on Linux.
+---
+
+The image runs the CLI. Its default command is:
+
+```sh
+rift run --all --log json --quiet
+```
+
+It reads `/config/rift.toml` (`RIFT_CONFIG=/config/rift.toml`) and prints status events as JSON lines. Traffic is not logged because of `--quiet`. Override the command without `--quiet` to log traffic too.
+
+The container runs as a non-root user `rift` that belongs to the `dialout` group.
+
+Released images are published for `linux/amd64` and `linux/arm64` as `ghcr.io/skylineagle/rift:<version>` and `:latest`. To build locally, use `docker build -t rift .` from a checkout and replace the image name below with `rift`.
+
+## Docker
+
+```sh
+# All profiles from your own config
+docker run --rm -v "$PWD/examples:/config:ro" -p 9000:9000 -p 5000:5000/udp ghcr.io/skylineagle/rift
+
+# One profile
+docker run --rm -v "$PWD/examples:/config:ro" -p 9000:9000 ghcr.io/skylineagle/rift run gps
+
+# Ad-hoc pipe, no config needed
+docker run --rm -p 9000:9000 -p 5000:5000/udp ghcr.io/skylineagle/rift \
+  pipe tcp-server://0.0.0.0:9000 udp-server://0.0.0.0:5000
+
+# Serial passthrough (Linux host)
+docker run --rm --device /dev/ttyUSB0 -p 9000:9000 ghcr.io/skylineagle/rift \
+  pipe tcp-server://0.0.0.0:9000 "uart:///dev/ttyUSB0?baud=115200"
+
+# List serial ports visible to the container
+docker run --rm --device /dev/ttyUSB0 ghcr.io/skylineagle/rift ports
+```
+
+The mount must contain a file named `rift.toml`. To use another file name, set `-e RIFT_CONFIG=/config/<name>.toml`.
+
+## Docker Compose
+
+The repository's `docker-compose.yml`:
+
+```yaml
+services:
+  rift:
+    build: .
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    volumes:
+      - ./examples:/config:ro
+    ports:
+      - "9000:9000"
+      - "5000:5000/udp"
+    # devices:
+    #   - /dev/ttyUSB0:/dev/ttyUSB0
+```
+
+```sh
+docker compose up --build
+```
+
+It mounts `./examples` as `/config` and runs every profile in `examples/rift.toml`. Uncomment `devices:` to pass a UART through. To use the published image, replace `build: .` with `image: ghcr.io/skylineagle/rift`.
+
+## Ports
+
+Publish every port that a server endpoint listens on. TCP uses `-p 9000:9000`. UDP needs the suffix: `-p 5000:5000/udp`.
+
+<Callout type="warn">
+Bind servers to `0.0.0.0` inside the container. A server bound to `127.0.0.1` inside the container cannot be reached through a published port.
+</Callout>
+
+## Serial passthrough
+
+Pass the device with `--device /dev/ttyUSB0` (or `devices:` in Compose) and use that same path in the endpoint.
+
+<Callout type="warn">
+Serial passthrough needs a Linux host. Docker Desktop on macOS and Windows cannot pass USB devices to containers.
+</Callout>
+
+If the port opens with a permission error, see [Troubleshooting](/docs/user/troubleshooting#serial-port-is-missing-or-permission-denied).

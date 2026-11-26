@@ -1,0 +1,86 @@
+---
+title: rift pipe
+description: Bridge two endpoints from the command line without saving a profile.
+---
+
+```sh
+rift pipe [OPTIONS] <A> <B>
+```
+
+`rift pipe` bridges two endpoints and forwards bytes both ways until you press Ctrl+C or the process gets SIGTERM. Nothing is saved.
+
+| Argument or flag | Default | Meaning |
+| --- | --- | --- |
+| `<A>` | required | Endpoint URI for side A. |
+| `<B>` | required | Endpoint URI for side B. |
+| `--name <NAME>` | `adhoc` | Profile name used in output, logs and stdin commands. |
+| `--log <text\|hex\|json>` | `hex` | How traffic is printed. |
+| `--quiet` | off | Hide data and per-step workflow events. |
+| `-c, --config <PATH>` | see below | Config file to read the `[logging]` section from. |
+
+`--config` and `RIFT_CONFIG` only supply the `[logging]` section for `pipe`. If the resolved file does not exist, logging is off. Profiles in that file are not used.
+
+URI syntax and options are in [Endpoints](/docs/user/endpoints). Quote any URI that contains `?` or `&`.
+
+## Examples
+
+```sh
+# Expose a serial device over the network (any TCP client sees the UART)
+rift pipe tcp-server://0.0.0.0:9000 "uart:///dev/ttyUSB0?baud=115200"
+
+# Forward UDP datagrams to a remote TCP service
+rift pipe udp-server://0.0.0.0:5000 tcp://example.com:7000
+
+# Relay between two UDP peers with a fixed local port
+rift pipe "udp://10.0.0.5:6000?bind=0.0.0.0:7000" udp-server://0.0.0.0:5000
+
+# Plain TCP port forward
+rift pipe tcp-server://0.0.0.0:8080 tcp://10.0.0.2:80
+
+# Serial with 8E1 framing and hardware flow control
+rift pipe tcp-server://0.0.0.0:9000 "uart:///dev/ttyUSB0?baud=9600&parity=even&flow=hardware"
+
+# Accept one TCP client only, reconnect faster to the other side
+rift pipe "tcp-server://0.0.0.0:9000?max_clients=1" "tcp://192.168.1.20:4000?reconnect_delay_ms=200"
+
+# Start a side disabled, enable it later from stdin with `b on`
+rift pipe tcp-server://0.0.0.0:9000 "tcp://example.com:7000?enabled=false"
+
+# Windows serial port
+rift pipe tcp-server://0.0.0.0:9000 "uart://COM3?baud=9600"
+
+# Name the bridge and print traffic as JSON
+rift pipe --name probe --log json tcp-server://127.0.0.1:9000 udp-server://127.0.0.1:5000
+
+# Hide traffic, show only connection status
+rift pipe --quiet tcp-server://0.0.0.0:9000 tcp://example.com:7000
+```
+
+## Try it locally
+
+Two terminals:
+
+```sh
+rift pipe tcp-server://0.0.0.0:9000 udp-server://0.0.0.0:5000 --log text
+```
+
+```sh
+nc localhost 9000
+```
+
+Type in the `nc` terminal. The line shows up in the Rift output and goes to UDP peers on port 5000.
+
+## While it runs
+
+- Type [stdin commands](/docs/user/injection#stdin-commands) to inject data or switch a side.
+- Run `rift inject adhoc ...` from another terminal. Use your `--name` in place of `adhoc`.
+- Run several pipes at once by giving each one a distinct `--name`.
+
+## Running in the background
+
+```sh
+rift pipe tcp-server://127.0.0.1:9000 udp-server://127.0.0.1:5000 --log json > rift.log 2>&1 &
+RIFT_PID=$!
+# ... test, for example: printf 'hello' | nc -w1 127.0.0.1 9000
+kill $RIFT_PID
+```

@@ -1,0 +1,95 @@
+---
+title: Introduction
+description: What Rift is, how the two sides of a bridge work, and a five-minute quick start.
+---
+
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+Rift bridges two endpoints and moves bytes between them in both directions.
+An endpoint is a TCP client, TCP server, UDP client, UDP server or a serial (UART) port.
+You can inspect the traffic, inject data by hand, and script sends with workflows.
+
+Rift comes as a CLI (`rift`), a desktop app and a container image. All three use the same engine and the same config file.
+
+## Sides A and B
+
+Every bridge has two sides, **A** and **B**. Whatever side A receives is written to side B, and the other way around.
+
+```text
+ TCP clients ──►  A: tcp-server :9000  ◄──►  B: uart /dev/ttyUSB0  ◄──► serial device
+```
+
+A bridge that you save under a name is a **profile**. A bridge you start straight from the command line with `rift pipe` is ad hoc and is not saved.
+
+## Quick start
+
+<Steps>
+<Step>
+
+Install Rift. See [Installation](/docs/user/installation) for the desktop app, CLI archives, source builds and the container.
+
+```sh
+rift --version
+```
+
+</Step>
+<Step>
+
+Start a bridge that joins a TCP server and a UDP server.
+
+```sh
+rift pipe tcp-server://0.0.0.0:9000 udp-server://0.0.0.0:5000 --log text
+```
+
+</Step>
+<Step>
+
+In a second terminal, connect to the TCP side and type a line.
+
+```sh
+nc localhost 9000
+```
+
+The line shows up in the first terminal. Anything a UDP peer sends to port 5000 comes out of the TCP connection.
+
+</Step>
+<Step>
+
+In a third terminal, inject bytes into side A from the CLI.
+
+```sh
+rift inject adhoc a text 'hello\r\n'
+```
+
+`adhoc` is the default name of a `rift pipe` bridge.
+
+</Step>
+<Step>
+
+Stop the bridge with Ctrl+C.
+
+</Step>
+</Steps>
+
+## Where to go next
+
+<Cards>
+  <Card title="Concepts" href="/docs/user/concepts">
+    Sides, profiles, the config file and status events.
+  </Card>
+  <Card title="Endpoints" href="/docs/user/endpoints">
+    Every endpoint kind, URI syntax and option.
+  </Card>
+  <Card title="CLI reference" href="/docs/user/cli/pipe">
+    pipe, run, profile, ports, inject, workflow and update.
+  </Card>
+  <Card title="Desktop app" href="/docs/user/desktop">
+    Profiles, live traffic, injection and workflows in a window.
+  </Card>
+  <Card title="Container" href="/docs/user/container">
+    Run Rift with Docker or Compose.
+  </Card>
+  <Card title="Examples" href="/docs/user/examples">
+    Ready-made configs for every endpoint pair.
+  </Card>
+</Cards>

@@ -1,0 +1,154 @@
+---
+title: Examples
+description: Walk through the ready-made configs in examples/ and examples/combos, one per connection pair.
+---
+
+The repository ships ready-to-run configs in [`examples/`](https://github.com/skylineagle/rift/tree/main/examples). Each file is named `<side-a>-to-<side-b>.toml`. Multi-profile setups are in [`examples/combos/`](https://github.com/skylineagle/rift/tree/main/examples/combos).
+
+Run any of them from a checkout:
+
+```sh
+rift run -c examples/tcp-server-to-uart.toml serial-over-tcp
+rift run -c examples/combos/sensor-gateway.toml --all
+```
+
+Device paths such as `/dev/ttyUSB0` and addresses such as `10.0.0.20` are placeholders. Change them to match your setup. `examples/rift.toml` has two profiles (`gps`, `relay`) and a commented reference for workflows and logging.
+
+## One file per pair
+
+| File | Profile | Shows |
+| --- | --- | --- |
+| `tcp-server-to-uart` | `serial-over-tcp`, `serial-exclusive` | Serial device shared over TCP, exclusive client, 7E2 with hardware flow |
+| `tcp-client-to-uart` | `uart-uplink` | UART streamed to a remote collector with fast reconnect |
+| `tcp-server-to-tcp-client` | `port-forward` | Plain TCP port forward |
+| `tcp-server-to-tcp-server` | `rendezvous` | Two inbound parties joined |
+| `tcp-client-to-tcp-client` | `device-link` | Join two devices that only accept connections |
+| `udp-server-to-uart` | `udp-serial` | UDP to serial, replies to the last sender |
+| `udp-client-to-uart` | `uart-telemetry` | Serial telemetry pushed to a fixed UDP target |
+| `udp-server-to-tcp-client` | `udp-to-tcp` | Many UDP senders funneled into one TCP stream |
+| `tcp-server-to-udp-client` | `tcp-to-udp` | TCP-only tools reaching a UDP service |
+| `udp-client-to-udp-server` | `udp-relay` | UDP relay with peer timeout |
+| `uart-to-uart` | `baud-adapter` | Baud-rate adapter between two serial ports |
+
+### Share a serial device over TCP
+
+```toml
+[[profile]]
+name = "serial-over-tcp"
+a = { kind = "tcp-server", bind = "0.0.0.0:9000" }
+b = { kind = "uart", port = "/dev/ttyUSB0", baud_rate = 115200 }
+
+[[profile]]
+name = "serial-exclusive"
+a = { kind = "tcp-server", bind = "0.0.0.0:9001", max_clients = 1, no_delay = true }
+b = { kind = "uart", port = "/dev/ttyUSB1", baud_rate = 9600, data_bits = 7, parity = "even", stop_bits = 2, flow_control = "hardware" }
+```
+
+Any TCP client on port 9000 talks to the UART. The second profile accepts one client and uses 7E2 framing with hardware flow control.
+
+```sh
+rift run -c examples/tcp-server-to-uart.toml serial-over-tcp
+nc <host> 9000
+```
+
+### Stream a UART to a remote collector
+
+```toml
+a = { kind = "tcp-client", address = "collector.example.com:7000", reconnect_delay_ms = 500, connect_timeout_ms = 3000 }
+b = { kind = "uart", port = "/dev/ttyACM0", baud_rate = 57600, flow_control = "software" }
+```
+
+Rift dials out and reconnects every 500 ms at first, backing off up to 10 seconds if the collector is down.
+
+### Rendezvous of two inbound parties
+
+```toml
+a = { kind = "tcp-server", bind = "0.0.0.0:9100", max_clients = 1 }
+b = { kind = "tcp-server", bind = "0.0.0.0:9101", max_clients = 1 }
+```
+
+Both parties connect in, one per port, and Rift joins them. Data sent while the other party is not connected is not delivered.
+
+### UDP to serial with replies to the last sender
+
+```toml
+a = { kind = "udp-server", bind = "0.0.0.0:5000", reply_to = "last", peer_timeout_secs = 30 }
+b = { kind = "uart", port = "/dev/ttyUSB0", baud_rate = 38400 }
+```
+
+Serial output goes only to the peer that sent last. A peer silent for 30 seconds is forgotten.
+
+### Serial telemetry to a UDP target
+
+```toml
+a = { kind = "udp-client", remote = "10.0.0.50:14550", bind = "0.0.0.0:14555" }
+b = { kind = "uart", port = "/dev/ttyAMA0", baud_rate = 921600 }
+```
+
+Sends from local port 14555 to a fixed target.
+
+### Baud-rate adapter
+
+```toml
+a = { kind = "uart", port = "/dev/ttyUSB0", baud_rate = 9600 }
+b = { kind = "uart", port = "/dev/ttyUSB1", baud_rate = 115200 }
+```
+
+## Combos
+
+| File | Profiles | Shows |
+| --- | --- | --- |
+| `combos/sensor-gateway` | `gps`, `modem`, `imu` | GPS, modem and IMU each on their own port |
+| `combos/cloud-uplink` | `primary`, `backup` | Primary uplink plus a disabled backup you switch on live |
+| `combos/protocol-translator` | `via-tcp`, `via-udp`, `via-serial` | One service reachable over TCP, UDP and serial |
+| `combos/lab-bench` | `mitm`, `console` | UART sniffing loop plus a local remote console |
+
+### Sensor gateway
+
+```sh
+rift run -c examples/combos/sensor-gateway.toml --all
+```
+
+- `gps`: TCP server on 9000 to a 9600 baud UART.
+- `modem`: TCP server on 9001, one client, to a 115200 baud UART with hardware flow control.
+- `imu`: UDP server on 5000 to a 921600 baud UART on `/dev/ttyACM0`. Peers silent for 30 seconds are forgotten.
+
+### Cloud uplink
+
+```sh
+rift run -c examples/combos/cloud-uplink.toml --all
+```
+
+`primary` streams a UART to `ingest.example.com:7000`. `backup` has side A disabled (`enabled = false`). Turn it on while running by typing on stdin:
+
+```text
+backup:a on
+```
+
+Turn it off again with `backup:a off`.
+
+### Protocol translator
+
+The same remote service at `10.0.0.20:4000` is reachable through three profiles: TCP on 9000, UDP on 5000 (replies go to the last sender), and a serial cable on `/dev/ttyUSB0`.
+
+### Lab bench
+
+`mitm` bridges two UARTs so you can watch the traffic between a device and its host with `--log text` or `--log hex`. `console` exposes a third UART as a TCP console on `127.0.0.1:2323`, one client at a time.
+
+```sh
+rift run -c examples/combos/lab-bench.toml --all --log hex
+```
+
+## Ad-hoc equivalents
+
+You do not need a file for a quick test. This is `serial-over-tcp` as one command:
+
+```sh
+rift pipe tcp-server://0.0.0.0:9000 "uart:///dev/ttyUSB0?baud=115200"
+```
+
+You can also turn a pipe into a saved profile:
+
+```sh
+rift profile add serial-over-tcp tcp-server://0.0.0.0:9000 "uart:///dev/ttyUSB0?baud=115200"
+```

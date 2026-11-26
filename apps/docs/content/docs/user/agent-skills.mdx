@@ -1,0 +1,32 @@
+---
+title: Agent skills
+description: Install the Rift skills so AI coding agents can run pipes, manage profiles, and inject data.
+---
+
+The repository includes two skills that teach AI agents how to use the CLI.
+
+```sh
+npx skills add skylineagle/rift
+```
+
+| Skill | Use it when you ask the agent to |
+| --- | --- |
+| `rift-pipe` | Bridge, forward, relay, expose or sniff a serial port, TCP or UDP connection with `rift pipe`, watch traffic and inject data. |
+| `rift-profiles` | Save, reuse, start several, or configure bridges: add, list and remove profiles, edit `rift.toml`, and run them with `rift run`. |
+
+Both skills live in [`skills/`](https://github.com/skylineagle/rift/tree/main/skills), each with a `SKILL.md` and a `references/` folder.
+
+## What the skills cover
+
+- Checking that the CLI is installed (`rift --version`) and listing ports with `rift ports`.
+- The endpoint URIs and options.
+- Running `rift pipe` and `rift run` as background processes, reading output with `--log json`, and stopping them when done.
+- Injecting from another shell with `rift inject` and `rift workflow`, instead of piping into stdin.
+- Passing `-c` explicitly so an agent working in a project does not touch your global profiles.
+- Docker use, with the Linux-only serial passthrough limit.
+
+## Tips
+
+- Ask the agent to bind to `127.0.0.1` for local tests and to kill the processes it starts.
+- Give each concurrent `rift pipe` a distinct `--name` so the agent can address it with `rift inject`.
+- `--log json` output is the easiest format for an agent to parse.

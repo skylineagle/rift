@@ -1,0 +1,46 @@
+---
+title: Desktop app
+description: Overview of apps/desktop, a Tauri 2 app that hosts rift-core in-process and renders it with React.
+---
+
+The desktop app lives in `apps/desktop`. It has two halves.
+
+| Half | Path | Language | Job |
+| --- | --- | --- | --- |
+| Backend | `apps/desktop/src-tauri` | Rust | Hosts `rift-core` in the app process. Exposes Tauri commands. Batches events to the webview. |
+| Frontend | `apps/desktop/src` | TypeScript, React 19 | Profile list, bridge view, log, injection, workflows, logging settings. |
+
+```text
+ webview (React)                          Rust process
+ ---------------                          ------------
+ components  --useStore-->  stores
+                              |  tauriApi.ts: invoke("start_profile", ...)
+                              +-----------------------------------------> commands.rs
+                                                                            |
+                                                                            v
+                                                                          AppState { Rift, Workflows, ProfileStore }
+ eventStream.ts <--- Channel (binary frames, every 50 ms) <--- event_forwarder.rs <--- rift.subscribe()
+```
+
+The engine runs in the same process as the UI. There is no sidecar daemon for the app's own bridges. The bundled `rift` binary is the CLI, shipped so users get a command on their PATH.
+
+Read next:
+
+- [Backend](/docs/developer/desktop/backend): `src-tauri`, commands, event batching, CLI linking, updater.
+- [Frontend](/docs/developer/desktop/frontend): stores, `tauriApi.ts`, component layout, the particle stream.
+- [State flow](/docs/developer/desktop/state-flow): what happens from an engine event to pixels, and from a click to an engine change.
+
+## Tooling
+
+`apps/desktop/package.json` scripts:
+
+| Script | Runs |
+| --- | --- |
+| `bun run dev` | `vite`, serves on `http://localhost:1420` |
+| `bun run build` | `tsc --noEmit && vite build` |
+| `bun run test` | `bun test --isolate` |
+| `bun run tauri` | The Tauri CLI. `tauri dev` and `tauri build` come from here. |
+
+Stack: React 19, Vite, Tailwind CSS 4 (`@tailwindcss/vite`), Radix UI primitives under `components/ui/`, `lucide-react` icons and `@yusufceng1z/ding-react` for toasts.
+
+`tauri.conf.json` ties them together: `beforeDevCommand` is `bun run dev`, `devUrl` is `http://localhost:1420`, `beforeBuildCommand` is `bun run build` and `frontendDist` is `../dist`. The window is 1240 by 780, minimum 980 by 620, with an overlay title bar and a hidden title. The React `TitleBar` draws the title area, and the `core:window:allow-start-dragging` permission lets it move the window.

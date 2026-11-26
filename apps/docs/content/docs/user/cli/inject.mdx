@@ -1,0 +1,53 @@
+---
+title: rift inject
+description: Send bytes into a running bridge from another terminal, once or on a repeat.
+---
+
+```sh
+rift inject [OPTIONS] <PROFILE> <a|b|both> <text|hex|bin|file> <PAYLOAD>...
+```
+
+`rift inject` sends data into a Rift that is already running the profile on the same machine: `rift run`, `rift pipe` or the desktop app. It exits with an error if nothing is running that profile.
+
+| Argument or flag | Meaning |
+| --- | --- |
+| `<PROFILE>` | Profile name. For `rift pipe` use its `--name` (default `adhoc`). |
+| `<a\|b\|both>` | Which side to write out of. |
+| `<text\|hex\|bin\|file>` | Payload format. See [payload formats](/docs/user/injection#payload-formats). |
+| `<PAYLOAD>...` | The payload. Several words are joined with one space. |
+| `--every <DURATION>` | Repeat the send. Units: `ms`, `s`, `m`. Minimum 1 ms. For example `250ms`, `1.5s`, `2m`. |
+| `--count <N>` | With `--every`: stop after N sends. At least 1. Without `--count`, it repeats until stopped. |
+
+On success it prints `injected into <profile>`.
+
+## Examples
+
+```sh
+rift inject gps a text 'PING\r\n'
+rift inject gps both hex de ad be ef
+rift inject gps b bin 01000001 01000010
+rift inject gps b file ./frame.bin
+
+# Repeat every 500 ms until stopped
+rift inject gps a text PING --every 500ms
+
+# Repeat 10 times, 1.5 s apart
+rift inject gps a text PING --every 1.5s --count 10
+
+# Stop a repeating inject
+rift workflow stop gps cli-inject
+
+# Ad hoc pipe
+rift inject adhoc a text 'hello\r\n'
+```
+
+## Notes
+
+- Quote text payloads that contain spaces, backslashes or shell characters. Use single quotes so the shell does not change `\r\n`.
+- A payload that starts with `-` needs `--` before it: `rift inject gps a text -- -v`.
+- For `file`, the path is made absolute by `rift inject` and read by the running Rift, so the file must exist when you run the command.
+- A control request is capped at 64 KiB. For large payloads use the `file` format, which only passes the path.
+- `--every` runs as a workflow named `cli-inject`, one at a time per profile.
+- The side must be able to deliver. A TCP server with no connected client reports the bytes as not delivered.
+
+How it finds the running Rift: each Rift registers itself on the local machine, and `rift inject` connects to it. It works on the same machine only.

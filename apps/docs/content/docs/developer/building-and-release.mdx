@@ -1,0 +1,186 @@
+---
+title: Building and release
+description: Dev setup, building the CLI, desktop app and container image, the release workflow, signing secrets and versioning.
+---
+
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+## Dev setup
+
+You need:
+
+- Rust (stable). CI uses `dtolnay/rust-toolchain@stable`, with `rustfmt` and `clippy`.
+- On Linux: `libudev-dev` and `pkg-config`, because `tokio-serial` links `libudev`.
+- For the desktop app: Bun, plus the Tauri prerequisites for your OS. On Linux that adds `libwebkit2gtk-4.1-dev`, `libappindicator3-dev`, `librsvg2-dev` and `patchelf`.
+- For the docs site (`apps/docs`): Bun.
+
+```sh
+git clone https://github.com/skylineagle/rift
+cd rift
+cargo build -p rift-cli                  # target/debug/rift
+cargo run -p rift-cli -- pipe tcp-server://127.0.0.1:9000 udp-server://127.0.0.1:5000 --log text
+```
+
+## Building each artifact
+
+### CLI
+
+```sh
+cargo build --release -p rift-cli        # target/release/rift
+cargo install --path crates/rift-cli     # install from a checkout
+```
+
+`crates/rift-cli/build.rs` writes the Cargo `TARGET` triple into the `RIFT_TARGET` environment variable at compile time. `rift update` uses it to pick the matching release archive.
+
+### Desktop app
+
+```sh
+cd apps/desktop
+bun install
+bun run tauri dev        # Vite on :1420 plus the Rust backend, hot reload
+bun run tauri build      # local bundle in target/release/bundle/
+```
+
+`tauri dev` runs `bun run dev` first (`beforeDevCommand`). `tauri build` runs `bun run build` (`beforeBuildCommand`), which type-checks with `tsc --noEmit` and builds into `apps/desktop/dist`. The Rust crate needs `dist` to exist at compile time, because `tauri::generate_context!` embeds it. The bench workflow creates an empty `apps/desktop/dist/index.html` for the same reason when it only builds the headless example.
+
+A plain `tauri build` uses `tauri.conf.json` only, so it has no sidecar and no updater artifacts. Release-only settings live in two overlay files:
+
+| File | Adds |
+| --- | --- |
+| `tauri.release.conf.json` | Bundle targets `deb`, `rpm`, `appimage`, `app`, `dmg`, `nsis`. The `externalBin` sidecar `binaries/rift`. The NSIS installer hook `windows/hooks.nsh`. |
+| `tauri.updater.conf.json` | `createUpdaterArtifacts: true`. |
+
+To build a release-shaped bundle locally, build the CLI, copy it to `apps/desktop/src-tauri/binaries/rift-<target triple>` (add `.exe` on Windows), and pass `--config src-tauri/tauri.release.conf.json` to `tauri build`. `binaries/` is git-ignored.
+
+### Container image
+
+```sh
+docker build -t rift .
+docker compose up --build
+```
+
+The `Dockerfile` is two stages:
+
+1. `rust:1-bookworm`. Installs `libudev-dev` and `pkg-config`, copies only `Cargo.toml`, `Cargo.lock` and `crates/`, and removes the desktop member with `sed -i "s#, \"apps/desktop/src-tauri\"##" Cargo.toml`. Then `cargo build --release -p rift-cli`. The image never needs the Tauri toolchain.
+2. `debian:bookworm-slim`. Installs `libudev1` and `ca-certificates`, creates a system user `rift` in the `dialout` group (for serial devices), and a `/config` directory.
+
+```dockerfile
+ENV RIFT_CONFIG=/config/rift.toml
+ENTRYPOINT ["rift"]
+CMD ["run", "--all", "--log", "json", "--quiet"]
+```
+
+`.dockerignore` excludes `target/`, `.git/` and `assets/`. Container logging is stdout JSON lines, which Docker's log drivers collect. `docker-compose.yml` mounts `./examples` as `/config` and caps the json-file log at 5 files of 10 MB.
+
+## CI
+
+`.github/workflows/ci.yml` runs on pushes to `main` and on pull requests, with `concurrency` cancelling older runs of the same ref:
+
+| Job | Steps |
+| --- | --- |
+| `rust` | `cargo fmt --all --check`, `cargo clippy --workspace --exclude rift-desktop --all-targets -- -D warnings`, `cargo test --workspace --exclude rift-desktop` |
+| `desktop` | `bun install --frozen-lockfile`, `bun run build`, `bun run test`, `cargo clippy -p rift-desktop -- -D warnings` |
+| `docker` | `docker/build-push-action` with `push: false` |
+
+Run the same commands before you push. Clippy warnings fail CI.
+
+## Versioning
+
+One version covers everything, set in the root `Cargo.toml`:
+
+```toml
+[workspace.package]
+version = "0.2.1"
+```
+
+`rift-core`, `rift-cli` and `rift-desktop` all use `version.workspace = true`. Tauri takes the app version from the desktop crate, because `tauri.conf.json` has no `version` key.
+
+To bump a version, change these together:
+
+- `[workspace.package] version` in `Cargo.toml`.
+- The `version` field of the `rift-core` entry in `[workspace.dependencies]`.
+- `Cargo.lock`. Release builds use `--locked`, so the lock file must match. Running `cargo build` updates it.
+- `apps/desktop/package.json`, which carries its own copy of the version. Nothing in the release workflow reads it, so keep it in step by hand.
+
+## Release workflow
+
+`.github/workflows/release.yml` runs when a tag matching `v*` is pushed.
+
+<Steps>
+<Step>
+
+### Tag
+
+Bump the version, commit, then tag and push:
+
+```sh
+git tag v0.3.0 && git push origin v0.3.0
+```
+
+</Step>
+<Step>
+
+### Prepare
+
+The `prepare` job reads the `rift-cli` package version with `cargo metadata`. The tag must be `v<version>` for a stable release. A tag like `v<version>-rc.1` is allowed and marks a pre-release. Anything else fails the job with an error. It then creates a draft GitHub release with generated notes, so artifact jobs have a release to attach to.
+
+</Step>
+<Step>
+
+### Build artifacts in parallel
+
+| Job | Output |
+| --- | --- |
+| `cli` | A `rift-<tag>-<target>` archive and `.sha256` file per target. `.tar.gz` on Linux and macOS, `.zip` on Windows. |
+| `desktop` | Installers and updater files, through `tauri-apps/tauri-action`. |
+| `docker` | One image per architecture, pushed as `ghcr.io/<repo>:<version>-<arch>`. |
+
+</Step>
+<Step>
+
+### Manifest and publish
+
+`docker-manifest` joins the two architecture images into `<version>`, and adds `latest` only for stable releases. `publish` waits for `cli`, `desktop` and `docker-manifest`, then runs `gh release edit --draft=false` with `--latest` set to true only for stable releases. If any artifact job fails, the release stays a draft.
+
+</Step>
+</Steps>
+
+### CLI job details
+
+| Target | Runner |
+| --- | --- |
+| `x86_64-unknown-linux-gnu` | `ubuntu-24.04` |
+| `aarch64-unknown-linux-gnu` | `ubuntu-24.04-arm` |
+| `aarch64-apple-darwin` | `macos-latest` |
+| `x86_64-apple-darwin` | `macos-latest` |
+| `x86_64-pc-windows-msvc` | `windows-latest` |
+
+Linux builds use `cargo zigbuild --release --locked -p rift-cli --target <target>.2.17`. The `.2.17` suffix links against glibc 2.17, so the binary runs on old distributions. Other targets use plain `cargo build --release --locked`. The `Package` step then writes the archive and a `sha256sum` or `shasum -a 256` file next to it. `rift update` verifies that checksum before replacing itself.
+
+### Desktop job details
+
+Targets are Linux x86_64 (on `ubuntu-22.04`), macOS arm64 and x86_64, and Windows x86_64.
+
+1. Build `rift-cli` for the target and copy it to `apps/desktop/src-tauri/binaries/rift-<target>`. Tauri's sidecar support expects that name.
+2. `bun install --frozen-lockfile` in `apps/desktop`.
+3. Optionally enable macOS signing and the updater (next section).
+4. Run `tauri-apps/tauri-action` with `--target <target> --config src-tauri/tauri.release.conf.json` plus the updater config when enabled. `releaseDraft: true` and `tagName` attach the bundles to the draft release.
+
+### Signing secrets
+
+Both signing features are opt-in. Without secrets the workflow still builds unsigned bundles.
+
+| Secret | Used for |
+| --- | --- |
+| `APPLE_CERTIFICATE` | Base64 developer certificate. Its presence turns on macOS signing. |
+| `APPLE_CERTIFICATE_PASSWORD` | Password for the certificate. |
+| `APPLE_SIGNING_IDENTITY` | Identity name used to sign. |
+| `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` | Apple notarization. |
+| `TAURI_SIGNING_PRIVATE_KEY` | Signs updater artifacts. Its presence adds `--config src-tauri/tauri.updater.conf.json`. |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Password for that key. |
+
+The macOS step exits at once when `APPLE_CERTIFICATE` is empty. Otherwise it copies each of the six variables into `$GITHUB_ENV` using a heredoc delimiter (`NAME<<EOF`), which is safe for multi-line values such as certificates.
+
+The updater needs a key pair. `tauri.conf.json` embeds the public key (`plugins.updater.pubkey`) and the endpoint `https://github.com/skylineagle/rift/releases/latest/download/latest.json`. The private key stays in the secret. `tauri-action` uploads `latest.json` and the signed update bundles to the release. If you rotate the key, ship a release signed by the old key that embeds the new public key first, or installed apps will reject updates.
+
+Windows and Linux builds are not code signed by this workflow.

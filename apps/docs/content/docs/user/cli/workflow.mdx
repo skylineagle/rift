@@ -1,0 +1,63 @@
+---
+title: rift workflow
+description: List saved workflows and start, stop or inspect running ones.
+---
+
+```sh
+rift workflow list [-c <PATH>]
+rift workflow start <PROFILE> <NAME>
+rift workflow stop <PROFILE> <NAME>
+rift workflow status
+```
+
+`start`, `stop` and `status` talk to Rift instances running on the same machine (`rift run`, `rift pipe` or the desktop app). `list` only reads the config file.
+
+## `workflow list`
+
+Prints one line per saved workflow:
+
+```text
+gps  heartbeat  autostart=true  repeat=10  steps=2
+```
+
+`repeat=forever` appears when the workflow has no `repeat`.
+
+```sh
+rift workflow list
+rift workflow list -c examples/rift.toml
+```
+
+## `workflow start`
+
+Starts a saved workflow on a running profile. The profile must be running, and the workflow must exist in that profile in the running instance.
+
+```sh
+rift workflow start gps heartbeat
+```
+
+Prints `started heartbeat on gps`.
+
+## `workflow stop`
+
+```sh
+rift workflow stop gps heartbeat
+rift workflow stop gps cli-inject    # stop a repeating `rift inject`
+```
+
+Prints `stopped heartbeat on gps`.
+
+## `workflow status`
+
+```sh
+rift workflow status
+```
+
+```text
+cli pid=4242
+  profiles: gps, relay
+  workflows: gps/heartbeat
+```
+
+Each running Rift gets one entry, with its kind (`cli` or the desktop app), pid, running profiles and running workflows. A dash means none. With no running instance it prints `no running Rift instance found`.
+
+See [Workflows](/docs/user/workflows) for how to define them.

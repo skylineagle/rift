@@ -1,0 +1,89 @@
+---
+title: URIs and parsing
+description: How uri.rs parses endpoint URIs, the option system, the enabled flag and the round-trip rule.
+---
+
+`crates/rift-core/src/uri.rs` converts between endpoint URIs and `Endpoint` values. The CLI uses URIs for `rift pipe` and `rift profile add`. The TOML file uses the structured form instead. Both end up as the same `Endpoint`.
+
+## Grammar
+
+```text
+scheme://location?key=value&key=value
+```
+
+| Scheme | Endpoint | Location |
+| --- | --- | --- |
+| `tcp` | `TcpClient` | `host:port` |
+| `tcp-server` | `TcpServer` | bind address |
+| `udp` | `UdpClient` | remote `host:port` |
+| `udp-server` | `UdpServer` | bind address |
+| `uart` | `Uart` | port path or name, such as `/dev/ttyUSB0` or `COM3` |
+
+A UART URI for an absolute path has three slashes: `uart:///dev/ttyUSB0?baud=115200`. The parser splits on the first `://`, so the location is `/dev/ttyUSB0`.
+
+Options per scheme, from `parse_*` functions:
+
+| Scheme | Options |
+| --- | --- |
+| `tcp` | `reconnect_delay_ms`, `connect_timeout_ms`, `no_delay` |
+| `tcp-server` | `max_clients`, `no_delay` |
+| `udp` | `bind` |
+| `udp-server` | `reply_to`, `peer_timeout_secs` |
+| `uart` | `baud` (required), `data_bits`, `parity`, `stop_bits`, `flow` |
+
+Note that the URI key for the UART baud rate is `baud`, while the TOML field is `baud_rate`. The URI key for flow control is `flow`, the TOML field is `flow_control`.
+
+## Parsing steps
+
+```rust
+impl FromStr for Endpoint {
+    type Err = Error;
+    fn from_str(input: &str) -> Result<Self> {
+        let (scheme, location, mut options) = split_uri(input)?;
+        let endpoint = build_endpoint(scheme, location, &mut options)?;
+        options.finish()?;
+        Ok(endpoint)
+    }
+}
+```
+
+1. `split_uri` splits scheme, location and query, and builds an `Options` map. A pair without `=` is an error.
+2. `build_endpoint` picks the config type from the scheme. Each `parse_*` function pulls its options out with `take`, `take_parsed` (with a default) or `take_optional`.
+3. `options.finish()` fails if any option is left. A typo like `reconect_delay_ms=1` is an error, not a silent no-op.
+
+Errors are `Error::InvalidUri(message)`.
+
+The parsers start from the config type's `new()` constructor, so URI defaults and TOML defaults come from one place. For example, `parse_tcp_client` builds `TcpClientConfig::new(address)` and overrides only what the query sets.
+
+## The enabled flag
+
+`enabled` is not part of an endpoint. It belongs to `SideConfig`. `Endpoint::from_str` rejects it as an unknown option. `SideConfig::from_str` takes `enabled` first, then parses the rest as an endpoint:
+
+```rust
+let enabled = options.take_parsed("enabled", true)?;
+let endpoint = build_endpoint(scheme, location, &mut options)?;
+options.finish()?;
+```
+
+This is why `rift pipe "tcp://h:1?enabled=false" ...` works. The `SideConfig` `Display` impl appends `enabled=false` only when needed, using `?` or `&` as appropriate.
+
+## Display and the round-trip rule
+
+`Display` for `Endpoint` writes a URI. Every URI the parser accepts must parse back to an equal value, and printing an endpoint then parsing it must give the same endpoint. The `round_trips` test in `uri.rs` enforces both:
+
+```rust
+let endpoint: Endpoint = uri.parse().unwrap();
+assert_eq!(endpoint.to_string(), uri);
+assert_eq!(endpoint.to_string().parse::<Endpoint>().unwrap(), endpoint);
+```
+
+A small `Query` helper keeps output short. `push_if(key, value, default)` writes an option only when it differs from the default, so `tcp://localhost:9000` stays short. UART is the exception: it always prints all five options.
+
+## Where URIs are used
+
+- `rift pipe A B` and `rift profile add NAME A B` parse `SideConfig` (`crates/rift-cli/src/commands.rs`).
+- `rift profile list` prints profiles using the `Display` impl.
+- `Rift` logging uses `profile.a.endpoint.to_string()` in the `a` and `b` fields of `profile.started` records.
+- The desktop headless example (`apps/desktop/src-tauri/src/headless.rs`) parses URIs for its `pipe` command.
+
+When you add an endpoint kind, extend `build_endpoint`, add a `parse_*` function, extend `Display`, and add a line to the `round_trips` test. See [Contributing](/docs/developer/contributing).

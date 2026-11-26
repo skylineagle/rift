@@ -1,0 +1,162 @@
+---
+title: Testing
+description: Test layout across the workspace, how to run each suite, and the bench harness with its CI comparison action.
+---
+
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+
+## What runs where
+
+| Suite | Location | Runner | In CI |
+| --- | --- | --- | --- |
+| Core unit tests | `#[cfg(test)]` modules in `crates/rift-core/src/**` | `cargo test` | yes |
+| Core integration tests | `crates/rift-core/tests/bridge.rs`, `examples.rs` | `cargo test` | yes |
+| Control socket tests | `crates/rift-core/src/control/tests.rs` | `cargo test` | yes |
+| CLI unit tests | `#[cfg(test)]` modules in `crates/rift-cli/src/**` | `cargo test` | yes |
+| Desktop backend tests | `#[cfg(test)]` modules in `apps/desktop/src-tauri/src/**` | `cargo test -p rift-desktop` | no, only clippy |
+| Desktop frontend tests | `apps/desktop/src/**/*.test.ts` | `bun test --isolate` | yes |
+| Benchmarks | `bench/` | `rift-bench` | on pull requests |
+
+## Running tests
+
+<Tabs items={['Rust', 'Desktop frontend', 'Lint and format']}>
+  <Tab value="Rust">
+```sh
+cargo test --workspace --exclude rift-desktop
+```
+The desktop crate is excluded because it needs the Tauri system libraries. On Linux you also need `libudev-dev` and `pkg-config` for `tokio-serial`.
+
+To run one test by name:
+```sh
+cargo test -p rift-bridge-core broadcast_success_is_logged_once
+cargo test -p rift-bridge-core --test bridge
+```
+  </Tab>
+  <Tab value="Desktop frontend">
+```sh
+cd apps/desktop
+bun install --frozen-lockfile
+bun run build    # tsc --noEmit then vite build
+bun run test     # bun test --isolate
+```
+  </Tab>
+  <Tab value="Lint and format">
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --exclude rift-desktop --all-targets -- -D warnings
+cargo clippy -p rift-desktop -- -D warnings   # needs Tauri deps
+```
+  </Tab>
+</Tabs>
+
+CI (`.github/workflows/ci.yml`) runs these on every push to `main` and every pull request: `rust` (fmt, clippy, test), `desktop` (frontend build, `bun run test`, desktop clippy) and `docker` (image builds, not pushed).
+
+## Core tests
+
+### Unit tests
+
+Most modules carry their own tests. They pin the behaviour that is easy to break:
+
+| Module | What the tests cover |
+| --- | --- |
+| `uri.rs` | The round trip rule for every endpoint kind, the `enabled` option. |
+| `profile.rs` | Defaults, round trip, unknown sections kept, atomic import. |
+| `config_import.rs` | Error classes and name collision handling. |
+| `payload.rs` | Escapes, tolerant hex, error cases. |
+| `workflow.rs`, `workflow_runner.rs` | Validation, step loop, stop guarantees. |
+| `endpoint/link.rs` | A broadcast request produces one event, an undelivered injection keeps its payload. |
+| `endpoint/stream.rs` | A failed write never emits a success event. |
+| `drops.rs` | First drop reports at once, later drops roll up per second. |
+| `logging/*` | Record JSON shape, rotation, queue overflow, sink reconfiguration. |
+
+Time-dependent code uses tokio's paused clock. `rift-core` enables the `test-util` feature of tokio as a dev dependency, and tests use `#[tokio::test(start_paused = true)]` with `tokio::time::advance`. The file sink takes a `Clock` closure for the same reason.
+
+### Integration tests
+
+`crates/rift-core/tests/bridge.rs` runs real bridges on loopback sockets. Helpers there:
+
+- `free_tcp_port()` and `free_udp_port()` bind to port 0 and return the port, so tests do not collide.
+- `wait_for(&mut events, predicate)` reads a broadcast receiver until an event matches, with a 5 second timeout. Tests wait on events, not on fixed sleeps.
+- `start_pair(name, a_uri, b_uri)` builds a `Rift`, parses the two URIs and starts a profile.
+
+Scenarios covered include both directions between TCP and UDP servers, `max_clients`, UDP `reply_to = last`, disabled and paused sides, toggling sides at runtime, reconfiguring a side without touching the other, write failures, injection into listeners with no client, and autostarted workflows waiting for a side.
+
+`tests/examples.rs` loads every `.toml` under `examples/` into a `ProfileStore`. If you change the config schema and break a sample, this test fails.
+
+### Control socket tests
+
+`control/tests.rs` starts a `ControlServer` with a temp hosts directory (`start_in`) and exercises it end to end: inject, workflow start and stop, status, stale host file deletion, a wrong token, an oversized request and the connection limit.
+
+## Desktop frontend tests
+
+Test files sit next to the code they test: `lib/*.test.ts`, `stores/*.test.ts` and `components/streamBehavior.test.ts`.
+
+- Pure logic (`logRows`, `eventBatch`, `workflowRuns`, `hostPort`, `loggingSettings`) is tested directly.
+- Stores are tested by calling actions and reading `getState()`. Tauri modules are mocked with `mock.module`.
+- `streamBehavior.test.ts` is a wrapper. It spawns a separate `bun test` on `streamBehavior.check.tsx`, which sets up `happy-dom`, mocks Tauri modules and renders `InjectBar` and `LogPanel`. The wrapper keeps the global DOM setup from leaking into other test files. `bun run test` passes `--isolate` for the same reason.
+
+## Benchmarks
+
+`bench/` is a separate Cargo project (its `Cargo.toml` has an empty `[workspace]` table). It measures a built `rift` binary from the outside, as a black box. It does not link `rift-core`.
+
+```sh
+cargo build --release --manifest-path bench/Cargo.toml
+bench/target/release/rift-bench --rift target/release/rift <command>
+```
+
+Global options pick the binary: `--rift PATH` (default `../target/release/rift`) or `--rift-command "docker run ..."`, which wraps a command line. The second form is how the container is measured.
+
+| Command | Job |
+| --- | --- |
+| `case` | One scenario: endpoint kinds for A and B, direction, frame size, optional rate, duration, log mode. Prints JSON. |
+| `suites` | The full matrix of endpoint kind pairs and rates. Writes into `results/`. |
+| `soak` | A long run with sampling, `--minutes` default 60. |
+| `ci` | The fixed pull request scenarios, with base and head measured in alternating rounds. |
+| `compare` | Statistical comparison of two `ci` outputs. |
+
+The harness starts `rift pipe` (cases) or `rift run` (soak) as a child process with `RIFT_NO_UPDATE_CHECK=1`, connects its own sockets (and pseudo terminals for UART, see `pty.rs`) to each side, pushes frames, and samples the child's RSS and CPU time (`monitor.rs`). A delivery check (`delivery.rs`) fails a run if paced traffic is not delivered at the paced rate, so a case that silently drops data cannot pass as fast.
+
+### The `ci` scenarios
+
+`bench/src/scenarios.rs` defines four:
+
+| Name | A | B | Direction | Frame | Rate |
+| --- | --- | --- | --- | --- | --- |
+| `tcp 1 KiB a-to-b` | TCP server | TCP client | A to B | 1024 | unpaced |
+| `tcp 64 B a-to-b` | TCP server | TCP client | A to B | 64 | unpaced |
+| `tcp 1 KiB both` | TCP server | TCP client | both | 1024 | unpaced |
+| `udp 1400 B a-to-b at 50 MB/s` | UDP server | UDP client | A to B | 1400 | 50 MB/s |
+
+Each case yields a `Sample` per round: `throughput_mbps`, `cpu_pct_per_mbps` and `rss_peak_mb`. The compared metrics (`metric.rs`) are throughput (higher is better) and CPU per MB/s (lower is better).
+
+### The bench workflow and action
+
+`.github/workflows/bench.yml` runs on pull requests, with three jobs, one per host shape:
+
+| Job | What it builds and measures |
+| --- | --- |
+| `cli` | `rift` from `rift-cli`, head and base. |
+| `desktop` | The `headless` example from `rift-desktop`, which hosts the engine the way the app does. |
+| `container` | The Docker image, run with `docker run --rm --network host`. |
+
+Each job checks out the pull request head and the base commit (`path: base`), builds both, then calls the composite action `.github/actions/bench-compare`. If the base commit cannot build the shape (for example the `headless` example did not exist yet), the comparison is skipped with a notice.
+
+The action runs in three steps:
+
+1. Measure base and head in alternating rounds: `rift-bench ... ci --rounds 5 --seconds 2`. Alternating rounds spread machine noise across both sides.
+2. `compare` the two reports with `--failing-cases`. It writes the cases that look worse to `failing.txt` and exits successfully.
+3. Re-measure only those cases with 10 rounds, then run `compare --holm` without `--failing-cases`. The Holm correction controls false positives across the many metric tests. This last command exits non-zero when a case was inconclusive or got significantly worse, so only a regression that survives the confirmation fails the job. If the first pass found nothing, the confirmation step is skipped.
+
+Results go to the job summary, and the raw files are uploaded as the `bench-<shape>` artifact. `compare` takes `--threshold` (default 0.0) and `--alpha` (default 0.05).
+
+To reproduce locally:
+
+```sh
+cargo build --release -p rift-cli
+cargo build --release --manifest-path bench/Cargo.toml
+bench/target/release/rift-bench --rift target/release/rift ci --out /tmp/bench --rounds 5 --seconds 2
+```
+
+Pass `--base-rift PATH` to `ci` to measure another binary in the same alternating rounds, then run `compare --base DIR/base.json --head DIR/head.json`. The harness sets `RIFT_NO_UPDATE_CHECK=1` for the child. The container commands in `bench.yml` set it explicitly with `--env`.
+
+The `bench/blog`, `bench/report` and `bench/results` folders hold published reports and the tools that build them. They are not part of CI.

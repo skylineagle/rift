@@ -1,0 +1,4 @@
+{
+  "title": "CLI reference",
+  "pages": ["pipe", "run", "profiles", "ports", "inject", "workflow", "update"]
+}

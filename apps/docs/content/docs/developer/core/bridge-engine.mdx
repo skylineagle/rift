@@ -1,0 +1,141 @@
+---
+title: Bridge engine
+description: How bridge.rs runs one profile, relays bytes between sides and handles backpressure and drops.
+---
+
+`crates/rift-core/src/bridge.rs` runs one profile: two sides and the relay between them. `Rift` (see [Manager](/docs/developer/core/manager)) owns many bridges. A `Bridge` can also be used alone, which the integration tests do.
+
+## Types
+
+```rust
+pub struct Bridge {
+    profile: String,
+    outlet: Arc<Outlet>,
+    a: SideControl,
+    b: SideControl,
+    cancel: CancellationToken,
+    relay_cancel: CancellationToken,
+    relays: Mutex<Vec<JoinHandle<()>>>,
+}
+```
+
+| Type | Role |
+| --- | --- |
+| `Side` (`side.rs`) | `A` or `B`. `opposite()` flips it. |
+| `Target` (`side.rs`) | `A`, `B` or `Both`. `sides()` expands it. Parses from `a`, `b`, `both`, case-insensitive. |
+| `SideConfig` (`side_config.rs`) | An `Endpoint` plus `enabled`, flattened into one TOML table. `enabled` defaults to true. |
+| `SideControl` | Everything one side needs: its endpoint config, handle, channel senders and running task. |
+| `SideHandle` | The part other code may touch: the write queue and the state. Cheap to clone. |
+| `OpenLink` | The live link of an enabled side: write sender, `PeerCounter`, `DropTally`, a `tcp_server` flag. |
+| `Outlet` (`outlet.rs`) | Where a bridge publishes: event channels, traffic counters, optional logger. |
+
+`BridgeStatus` and `SideStatus` are the serializable snapshot: `profile`, and per side the `ConnectionState` and the peer count.
+
+## Starting
+
+`Bridge::start(profile)` builds a detached `Outlet`. `Rift::start` calls `Bridge::start_with_outlet` with a shared one.
+
+`start_with_outlet` does four things:
+
+1. `create_side` for A and B. Each call creates the `reads`, `states` and `state` channels, and if the side is enabled it opens the endpoint right away.
+2. Sends `ConnectionState::Disabled` for sides that start disabled.
+3. Spawns two `relay_side` tasks, one per direction. Each gets the opposite side's `SideHandle` so it can deliver into it.
+4. Stores the relay join handles for `stop`.
+
+A side that starts enabled has state `Disconnected { peer: None }` until its endpoint reports something. A disabled one starts as `Disabled`.
+
+## Opening a side
+
+`SideControl::open` creates the per-link channels and spawns the endpoint task:
+
+```rust
+fn open(&self, parent: &CancellationToken) -> RunningEndpoint {
+    let (writes_sender, writes) = mpsc::channel(CHANNEL_CAPACITY);
+    let peers = PeerCounter::default();
+    let cancel = parent.child_token();
+    *self.handle.open.lock().unwrap() = Some(OpenLink { /* writes_sender, peers, drops, tcp_server */ });
+    let link = Link { writes, context: Context { reads, states, peers, cancel } };
+    RunningEndpoint {
+        cancel,
+        task: tokio::spawn(endpoint::run(self.endpoint.lock().unwrap().clone(), link)),
+    }
+}
+```
+
+The `reads` and `states` senders are created once per side and survive reopen. The `writes` channel and `PeerCounter` are new on every open. That is deliberate: when a side is paused and resumed, no stale queued writes survive.
+
+## The relay
+
+`relay_side` runs once per direction. It reads from the source side's `reads` and `states` receivers and delivers into the opposite side:
+
+```rust
+tokio::select! {
+    biased;
+    Some(state) = channels.states.recv() => {
+        channels.state_sender.send_replace(state.clone());
+        outlet.events.publish(Event::status(&profile, side, state));
+    }
+    Some(bytes) = channels.reads.recv() => {
+        outlet.traffic.side(side).record_received(bytes.len());
+        outlet.events.publish(Event::data(&profile, side, side.opposite(), Origin::Received, &bytes, true));
+        let request = WriteRequest::new(bytes.clone(),
+            Event::data(&profile, side, side.opposite(), Origin::Forwarded, &bytes, true), outlet.clone());
+        if let Err(message) = opposite.deliver(request) { /* publish Error status */ }
+    }
+    _ = channels.stop.cancelled() => break,
+}
+```
+
+`biased` makes state changes win over data. A `Connected` state is processed before the first bytes from that peer, so event order in logs is sane. The `watch` update uses `send_replace` so `status()` always sees the latest state without awaiting.
+
+The `Forwarded` event is created up front but not published. It is carried inside the `WriteRequest` as a receipt. See [Events and traffic](/docs/developer/core/events-and-traffic) for how receipts settle.
+
+## Delivering and backpressure
+
+`SideHandle::deliver` decides what happens to a request:
+
+| Situation | Result |
+| --- | --- |
+| Side has no open link (paused or disabled) | `request.unavailable("paused")`. Returns `Ok(false)`. |
+| Link open but no connected peer | Dropped. For a TCP server in `Listening` state the request is first marked `unavailable("listening but has no connected clients")`. |
+| Write queue accepts it | `try_send` succeeds, `Ok(true)`. |
+| Write queue is full | Increment the side's `DropTally`. Request is dropped. |
+| Write queue is closed | `Err(message)`. The relay publishes an `Error` status. |
+
+Dropped is always silent for the sender: the source endpoint is never blocked. Data that cannot be delivered because there is no peer is normal, for example UART output with no TCP client yet connected.
+
+A full queue is the only case that counts as an overflow. `DropTally` (`drops.rs`) turns drops into `Event::Dropped` without flooding the event stream:
+
+```rust
+const REPORT_INTERVAL: Duration = Duration::from_secs(1);
+```
+
+The first drop is reported at once. Later drops are summed and reported at most once per second. The tally is checked on the next `deliver` call.
+
+The `unavailable` call only has an effect while the request is the only holder of its receipt (`Arc::get_mut`). That is true at this point, because the request has not been cloned yet. A TCP server clones the request per client later.
+
+## Peers
+
+`PeerCounter` (`peers.rs`) is an `Arc<AtomicUsize>`. Endpoints call `joined()` and `left()`. `deliver` calls `is_connected()` before queuing. This is how a TCP server with zero clients, a disconnected TCP client or an unopened UART avoids queuing data nobody will read.
+
+UDP sockets also count as peers: a UDP client counts as one peer as soon as its socket is open. A UDP server counts each distinct sender as a peer.
+
+## Injection
+
+`Bridge::inject(target, bytes)` builds a request with `Origin::Injected` for each side in `target.sides()` and calls the same `deliver`. The event's `source` is the opposite side, so a UI can draw it as coming from the other end. Injection never loops back to the opposite side.
+
+## Runtime changes
+
+| Method | Behaviour |
+| --- | --- |
+| `set_side_enabled(side, true)` | `enable`: opens the endpoint if not already running. |
+| `set_side_enabled(side, false)` | `disable`: closes the handle, cancels the child token, awaits the task, sends `Disabled`. |
+| `configure_side(side, config)` | `disable`, replace the endpoint config, then `enable` if `config.enabled`. The other side is untouched. |
+| `stop()` | Cancel parent token, await both endpoint tasks, cancel relays, await relays. |
+| `Drop` | Cancels both tokens. It does not await. |
+
+`disable` closes the handle before it cancels the task. Anything calling `deliver` in between sees "paused" and does not queue into a channel that is about to close.
+
+## Where the reads backpressure comes from
+
+`reads` is a bounded `mpsc` of 256 chunks. `Context::forward` awaits `reads.send`. If the relay falls behind, the endpoint's read loop waits. For TCP this gives normal TCP flow control back to the sender. For UDP the kernel buffer takes the loss.

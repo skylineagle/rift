@@ -1,0 +1,114 @@
+---
+title: Events and traffic
+description: The Event model, the all and lifecycle channels, delivery receipts, drop reporting and the atomic traffic counters.
+---
+
+Everything observable in Rift is an `Event` or a traffic counter. Hosts render events. The logger turns them into records.
+
+## Event types
+
+`event.rs` defines four event variants, tagged with `type` in JSON:
+
+```rust
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum Event {
+    Data { profile, timestamp, source, target, origin, bytes, delivered, undelivered_reason },
+    Status { profile, timestamp, side, state },
+    Dropped { profile, timestamp, side, peer, chunks },
+    Workflow { profile, timestamp, workflow, state },
+}
+```
+
+| Variant | Meaning |
+| --- | --- |
+| `Data` | A chunk of bytes. `origin` is `Received`, `Forwarded` or `Injected`. |
+| `Status` | A side changed `ConnectionState`. |
+| `Dropped` | `chunks` outbound chunks were dropped because a write queue or a client was behind. `peer` is set for a single TCP client. |
+| `Workflow` | A workflow changed `WorkflowState`. |
+
+`ConnectionState` is tagged with `state` and has `Disabled`, `Listening`, `Connecting`, `Connected { peer }`, `Disconnected { peer }` and `Error { message }`. `WorkflowState` has `Started`, `Step { cycle, step }`, `Finished`, `Stopped` and `Failed { message }`.
+
+Both enums serialize to the exact JSON the CLI prints with `--log json` and the desktop decodes. `Event::data`, `Event::status`, `Event::dropped` and `Event::workflow` are the constructors.
+
+### The three data origins
+
+| Origin | Created when | `delivered` |
+| --- | --- | --- |
+| `Received` | A chunk arrives from a side. Published by the relay at once. | `true` |
+| `Forwarded` | The chunk was written to the opposite side. Published when the write succeeds. | `true` |
+| `Injected` | A user or workflow injected bytes. Published when the write succeeds, or when the request is dropped. | `true` or `false` |
+
+For `Injected` events, `delivered = false` comes with an `undelivered_reason` when the cause is known, such as `paused` or `listening but has no connected clients`.
+
+## Two channels
+
+`EventChannels` in `outlet.rs` holds two `broadcast` senders:
+
+```rust
+pub fn publish(&self, event: Event) {
+    if !matches!(event, Event::Data { .. }) {
+        let _ = self.lifecycle.send(event.clone());
+    }
+    let _ = self.all.send(event);
+}
+```
+
+`all` carries everything. `lifecycle` carries everything except `Data`.
+
+Why two? Data events can arrive thousands of times per second. A subscriber that only needs state changes (the logger watcher, the workflow runner waiting for a side to connect, `rift run --quiet`) would otherwise lag behind and lose the events it needs. The lifecycle channel stays quiet under load.
+
+A `broadcast` receiver that falls behind gets `RecvError::Lagged(n)`. Every subscriber in the repo handles it and keeps going. The desktop forwards the number to the UI as a `lagged` count.
+
+## Receipts: when a Data event is published
+
+Forwarded and injected events are created when the chunk is handed to the destination, but published later. `WriteRequest` carries the prepared `Event` inside a `Receipt` (see [Endpoints](/docs/developer/core/endpoints)).
+
+```rust
+impl Receipt {
+    fn settle(&self, event: Event) {
+        self.account(&event);                 // update traffic counters, log injections
+        self.outlet.events.publish(event);
+    }
+}
+```
+
+`account` does two jobs. It updates the target side's counters (`record_delivered` or `record_undelivered`). For `Injected` events with a logger attached it also writes a `data.injected` debug record.
+
+The timestamp is refreshed in `delivered()`, so a `Forwarded` event's time is the write time, not the receive time.
+
+## Drop reporting
+
+Two sources produce `Event::Dropped`, both through a `DropTally` (`drops.rs`):
+
+- `SideHandle::deliver` when a side's write queue is full. Reported with `peer: None`.
+- `PeerWrites` when a TCP server client's broadcast receiver lags. Reported with the client address.
+
+A tally reports the first drop immediately, then rolls up later drops into at most one event per second.
+
+## Traffic counters
+
+`traffic.rs` keeps counters as atomics, one set per profile and side:
+
+```rust
+pub struct SideTraffic {
+    pub received_bytes: u64,
+    pub received_chunks: u64,
+    pub sent_bytes: u64,
+    pub sent_chunks: u64,
+    pub injected_bytes: u64,
+    pub undelivered_chunks: u64,
+}
+```
+
+| Counter | Incremented by |
+| --- | --- |
+| `received_*` | `relay_side`, on the source side, per chunk read. |
+| `sent_*` | `record_delivered`, on the target side, per successful write. |
+| `injected_bytes` | Delivered or undelivered injections, on the target side. |
+| `undelivered_chunks` | `record_undelivered`, on the target side. |
+
+All updates use `Ordering::Relaxed`. The counters are statistics, not synchronization.
+
+`TrafficRegistry` is `Arc<Mutex<HashMap<String, Arc<ProfileCounters>>>>`. The mutex is only taken to look up or snapshot. Hot-path updates touch atomics only. `snapshot()` returns `BTreeMap<String, ProfileTraffic>`. `SideTraffic::since(earlier)` computes deltas with `saturating_sub`, which the logging stats reporter uses to log traffic per interval.
+
+Counters are never removed, so a profile's totals survive restarts for the life of the process.

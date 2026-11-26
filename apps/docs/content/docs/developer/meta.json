@@ -1,0 +1,14 @@
+{
+  "title": "Developer manual",
+  "defaultOpen": true,
+  "pages": [
+    "index",
+    "architecture",
+    "core",
+    "cli",
+    "desktop",
+    "testing",
+    "building-and-release",
+    "contributing"
+  ]
+}

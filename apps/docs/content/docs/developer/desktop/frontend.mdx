@@ -1,0 +1,147 @@
+---
+title: Frontend
+description: The React frontend in apps/desktop/src, the store pattern, tauriApi.ts, the event stream, component layout and the particle stream canvas.
+---
+
+The frontend is in `apps/desktop/src`. It is a Vite and React 19 app. It talks to Rust only through `tauriApi.ts` and the event channel.
+
+## Directory map
+
+| Path | Content |
+| --- | --- |
+| `main.tsx` | Mounts `App` in `StrictMode` and loads `index.css`. |
+| `components/` | One React component per file. About 85 files, plus `ui/` for primitives. |
+| `components/ui/` | shadcn-style wrappers over Radix: `button`, `dialog`, `select`, `tabs`, `tooltip` and others. |
+| `stores/` | Module-level stores. State and actions together. |
+| `hooks/` | `useStore` and small selectors such as `useBridge`, `useProfiles`. |
+| `lib/` | Pure logic, the Tauri wrapper and shared types. Most of the tests live here. |
+
+## The store pattern
+
+There is no state library. `lib/createStore.ts` is a 20-line store:
+
+```ts
+export type Store<State> = {
+  getState: () => State;
+  setState: (update: (state: State) => State) => void;
+  subscribe: (listener: () => void) => () => void;
+};
+```
+
+`setState` takes an updater function. If the updater returns the same reference, no listener fires. That makes "no change" cheap to express: return `state` unchanged.
+
+`hooks/useStore.ts` connects a store to React with `useSyncExternalStore` and a selector:
+
+```ts
+export const useStore = <State, Selected>(store: Store<State>, select: (state: State) => Selected): Selected =>
+  useSyncExternalStore(store.subscribe, () => select(store.getState()));
+```
+
+A component re-renders only when its selected value changes by reference. Stores return stable references for unchanged data (for example `NO_ROWS` in `logStore.ts`) so selectors stay cheap.
+
+Stores live at module scope and subscribe to events when the module loads. A component never has to wire up a listener.
+
+| Store | Holds |
+| --- | --- |
+| `profilesStore` | Profiles, selection, side action queue, edit and pending markers, debounced saves. |
+| `bridgeStore` | Per-profile runtime: running flag, side status, counters and rates. |
+| `logStore` | Per-profile log rows. |
+| `eventStream` | Not a store: the single connection to the Rust event channel. |
+| `workflowRunStore` | Which workflows are running and their progress. |
+| `workflowPanelStore` | Whether the workflow panel is open. |
+| `loggingStore` | The `LoggingConfig` from the backend. |
+| `injectHistoryStore` | Last 8 injections per profile, saved in `localStorage`. |
+| `portsStore` | Serial ports. |
+| `payloadPreviewStore` | The bytes preview for the inject bar. |
+| `themeStore` | Theme choice. |
+| `updateStore` | App update state. |
+
+## tauriApi.ts
+
+`lib/tauriApi.ts` has one exported function per backend command. Each is a thin `invoke` call with typed input and output:
+
+```ts
+export const startProfile = (name: string) => invoke<void>("start_profile", { name });
+export const inject = (name: string, target: Target, format: PayloadFormat, input: string) =>
+  invoke<void>("inject", { name, target, format, input });
+```
+
+Types in `lib/types.ts` mirror the Rust serde shapes by hand: `Endpoint` is a union discriminated by `kind`, `RiftEvent` by `type`, and `ConnectionState` by `state`. When the Rust side changes, `types.ts` changes with it. There is no code generation.
+
+Components and stores never call `invoke` directly. Tests mock the `@/lib/tauriApi` module.
+
+## The event stream
+
+`stores/eventStream.ts` owns the one connection to the backend:
+
+```ts
+const connect = () => invoke("subscribe_events", { channel: new Channel<ArrayBuffer>(receive) });
+```
+
+Each frame goes through `decodeEventBatch` (`lib/eventBatch.ts`), which reads the length-prefixed header and slices the payload section into `Uint8Array`s. Skipped summaries become synthetic events of type `skipped`.
+
+Two subscription functions fan out:
+
+- `subscribeToBatches(listener)` gets `(events, lagged)` once per frame. Stores use it so they can update state once per frame.
+- `subscribeToEvents(listener)` gets each event. The particle canvas and the workflow store use it.
+
+## Components
+
+The layout in `components/App.tsx`:
+
+```text
+App
+  TooltipProvider
+    TitleBar
+    grid 212px | 1fr
+      ProfileSidebar            list of profiles, create, import
+      MainPanel (per profile)   or EmptyProfiles
+        ProfileHeader           name, start and stop
+        BridgeSection           SideCard A, SeamStream, SideCard B
+        LogPanel + WorkflowPanel
+        InjectBar               payload input, history
+    Toaster
+```
+
+`MainPanel` is keyed by profile name, so switching profile remounts the panel and resets local state like the log filter.
+
+Component rules, from the repo conventions:
+
+- One component per file, named in PascalCase.
+- Props are an exported type named `<Component>Props`, and the component is typed with `FC<Props>`.
+- No `useEffect` in components. Subscriptions live in stores. Components use `useStore`, event handlers and `useSyncExternalStore`-based hooks.
+
+Groups of related components share a name prefix: `Workflow*` (editor, list, rows, step cards), `Logging*` (settings dialog and its fields), `Inject*`, `Side*`, `Log*`.
+
+Component behaviour is tested in `components/streamBehavior.check.tsx` with `happy-dom` and mocked Tauri modules. See [Testing](/docs/developer/testing) for how it is run.
+
+## The particle stream
+
+`SeamStream.tsx` renders the animated line between side A and side B. It is a canvas that is driven by `lib/particleStream.ts`, outside React.
+
+```tsx
+const attach = useCallback(
+  (canvas: HTMLCanvasElement | null) => (canvas ? attachParticleStream(canvas, profileName) : undefined),
+  [profileName],
+);
+// <canvas ref={attach} ... />
+```
+
+The ref callback returns the cleanup function. `attachParticleStream(canvas, profileName)` returns a function that tears everything down.
+
+Inside, the module keeps a plain mutable `view` object and a particle array. It:
+
+- Subscribes to `bridgeStore` for the running flag, side status and the A to B and B to A rates. Side status maps to an end state: idle, waiting, ok or error.
+- Subscribes to `subscribeToEvents`. A particle is spawned only for `Data` events with `origin === "forwarded"` and `delivered`, for the right profile, and only while running. A particle is throttled to one per 30 ms per direction and capped at 90 alive.
+- Draws with `requestAnimationFrame`, and stops the loop when nothing is moving or the document is hidden.
+- Reads colors from CSS variables (`--ab`, `--ba`, `--err`, `--fg-3`, `--accent-text`) and re-reads them when the theme changes.
+- Honors `prefers-reduced-motion`: it spawns no particles and draws a static dotted lane whose density follows the data rate (`drawReduced`).
+- Scales the line brightness with the rate on a log scale (`levelOf`).
+
+Because the canvas draws from events and rates, not from component state, a burst of traffic never triggers a React render.
+
+`ReceiveBorder.tsx` uses the same ref callback pattern with `lib/receiveActivity.ts`. On each received chunk for its side it sets a `data-receiving` attribute on the element for 650 ms, and CSS does the flash. Again, no React render per event.
+
+## Tests
+
+Frontend tests use `bun test --isolate`. See [Testing](/docs/developer/testing).

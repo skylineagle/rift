@@ -1,0 +1,106 @@
+---
+title: Profiles and config
+description: The profile model, the TOML store that preserves unknown sections, atomic import, config path resolution and config_import.rs.
+---
+
+A profile is a named pair of sides plus optional workflows. Profiles live in one TOML file shared by the CLI and the desktop app.
+
+## Profile
+
+```rust
+pub struct Profile {
+    pub name: String,
+    pub a: SideConfig,
+    pub b: SideConfig,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workflows: Vec<Workflow>,
+}
+```
+
+In TOML, `SideConfig` flattens the `Endpoint` and its `kind` tag next to `enabled`:
+
+```toml
+[[profile]]
+name = "relay"
+a = { kind = "udp-server", bind = "0.0.0.0:5000" }
+b = { kind = "tcp-client", address = "example.com:7000", enabled = false }
+```
+
+`workflows` is skipped on write when empty, so profiles that never used workflows stay small.
+
+## ProfileStore
+
+`ProfileStore` in `profile.rs` is the whole file in memory:
+
+```rust
+pub struct ProfileStore {
+    #[serde(rename = "profile", default)]
+    profiles: Vec<Profile>,
+    #[serde(flatten)]
+    other_sections: toml::Table,
+}
+```
+
+The `#[serde(flatten)]` `other_sections` table is the key design choice. Anything in the file that is not `[[profile]]`, such as `[logging]`, is kept as raw TOML and written back unchanged. A host that only edits profiles cannot destroy logging config, and the other way around. The test `keeps_unknown_sections_and_workflows_across_load_and_save` covers it.
+
+Typed access to a section goes through two methods:
+
+```rust
+pub fn section<T: DeserializeOwned + Default>(&self, name: &str) -> Result<T>;
+pub fn set_section<T: Serialize>(&mut self, name: &str, value: &T) -> Result<()>;
+```
+
+The CLI reads `LoggingConfig` with `store.section("logging")`. The desktop saves it with `store.set_section("logging", &config)`.
+
+| Method | Behaviour |
+| --- | --- |
+| `load(path)` | Reads and parses. Errors if the file is missing. |
+| `load_or_default(path)` | Returns an empty store when the file does not exist. |
+| `save(path)` | Creates parent directories, writes pretty TOML with `fs::write`. |
+| `list`, `get` | Read access. |
+| `add(profile)` | Fails with `ProfileExists` on a duplicate name. |
+| `upsert(replacing, profile)` | Replaces in place, handles rename, fails if the new name collides. Appends when nothing matches. |
+| `remove(name)` | Returns the removed profile or `ProfileNotFound`. |
+| `import_atomic(profiles, path)` | See below. |
+
+### Atomic import
+
+`import_atomic` builds the next state in a clone, writes it to a temp file in the same directory, calls `sync_all`, then `persist`s over the target. Only then does it assign `*self = next`. If a name collides or the write fails, the file and the in-memory store both stay as they were. The test `atomic_import_preserves_store_on_collision_and_write_failure` checks this.
+
+`save` is a plain `fs::write` and is not atomic. Only the import path needs all-or-nothing behaviour.
+
+## Config path
+
+`config_path.rs`:
+
+```rust
+pub fn resolve_config_path(explicit: Option<&Path>) -> Result<PathBuf> {
+    if let Some(path) = explicit { return Ok(path.to_path_buf()); }
+    if let Some(path) = std::env::var_os("RIFT_CONFIG") { return Ok(PathBuf::from(path)); }
+    dirs::config_dir().map(|d| d.join("rift").join("rift.toml")).ok_or(Error::ConfigDirectoryUnavailable)
+}
+```
+
+Order: explicit path, then `RIFT_CONFIG`, then `rift/rift.toml` in the OS config directory. The CLI passes `-c` through clap's `env = "RIFT_CONFIG"`. The desktop calls `resolve_config_path(None)`.
+
+## Importing a config file
+
+`config_import.rs` is used by the desktop's drag and drop and import button. `prepare_config_import(content, filename, existing_names)` returns the profiles ready to add, or a `ConfigImportError`:
+
+| Error | Cause |
+| --- | --- |
+| `TooLarge` | More than `MAX_CONFIG_IMPORT_BYTES` (1 MiB). |
+| `UnsupportedFormat` | Valid JSON, or text that starts with `{` in a non-`.toml` file, or TOML without a `profile` key. |
+| `InvalidSyntax` | TOML parse error. |
+| `InvalidSchema` | Parsed but not a valid store, no profiles, or an empty profile name. |
+
+Name collisions are resolved before the profiles are returned. A colliding name gets a numeric suffix (`gps` becomes `gps 2`). The loop checks both existing names and names in the incoming file, so one import never steals a name another incoming profile already uses. The test `resolves_existing_and_incoming_collisions_without_stealing_names` shows `gps`, `gps`, `gps 2` against an existing `gps` becoming `gps 3`, `gps 4`, `gps 2`.
+
+Validation happens fully before any write. A bad profile later in the file means no profile is imported.
+
+## Where the engine meets the store
+
+The engine never reads or writes the store. Hosts do:
+
+- CLI `run` loads the store once, selects profiles, and hands them to `Rift::start`.
+- Desktop `save_profile` upserts and saves, but a running bridge keeps the profile it started with. The frontend pauses the edited side and re-applies it with `configure_side`. See [State flow](/docs/developer/desktop/state-flow).

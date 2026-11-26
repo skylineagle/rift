@@ -1,0 +1,140 @@
+---
+title: Architecture
+description: System overview, how the CLI, desktop app and container share rift-core, the A to B data flow and the task and channel model.
+---
+
+## One engine, three hosts
+
+All behaviour lives in `crates/rift-core`. A host builds a `Rift` value, feeds it profiles and listens to its events. Hosts add a user interface and process lifecycle, nothing else.
+
+```text
+ +-----------------+   +----------------------+   +------------------+
+ | rift (CLI)      |   | Rift desktop (Tauri) |   | container image  |
+ | crates/rift-cli |   | apps/desktop         |   | Dockerfile       |
+ +--------+--------+   +----------+-----------+   +--------+---------+
+          |                       |                        |
+          |  Rift, Workflows,     |  Rift, Workflows,      | runs the CLI:
+          |  ControlServer,       |  ControlServer,        | rift run --all
+          |  Logger               |  Logger                | --log json --quiet
+          v                       v                        v
+ +----------------------------------------------------------------+
+ |                        crates/rift-core                        |
+ |  manager  bridge  endpoint/*  event  traffic  workflow         |
+ |  control/*  logging/*  profile  uri  payload                   |
+ +----------------------------------------------------------------+
+```
+
+- The CLI (`crates/rift-cli/src/host_setup.rs`) wraps `Rift` in a `Host` struct with host kind `"cli"`.
+- The desktop app (`apps/desktop/src-tauri/src/app_state.rs`) wraps it in `AppState` with host kind `"desktop"`.
+- The container image runs the same `rift` binary. The `Dockerfile` builds only `rift-cli`: it removes `apps/desktop/src-tauri` from the workspace members with `sed` before `cargo build --release -p rift-cli`.
+
+The desktop app also ships the CLI as a Tauri sidecar (`externalBin` in `tauri.release.conf.json`). That is why `rift inject` works against a running desktop app. See [Control socket](/docs/developer/core/control-socket).
+
+## Crates and their public surface
+
+`crates/rift-core/src/lib.rs` keeps most modules private and re-exports the types hosts need. The public modules are `control`, `endpoint`, `format` and `logging`. Everything else is `mod` with selective `pub use`:
+
+```rust
+pub use manager::Rift;
+pub use bridge::{Bridge, BridgeStatus, SideStatus};
+pub use profile::{Profile, ProfileStore};
+pub use workflow_runner::{WorkflowStatus, Workflows};
+pub use event::{ConnectionState, Event, Origin, WorkflowState};
+```
+
+`Rift` is the entry point for hosts. `Bridge` is one running profile. `Workflows` runs scripted sends against a `Rift`.
+
+## Data flow, side A to side B
+
+A byte chunk read from A reaches B like this:
+
+```text
+ endpoint task A                relay task A              endpoint task B
+ ---------------                ------------              ---------------
+ read socket/port
+   |
+   | context.forward(bytes)
+   v
+ reads: mpsc<Bytes> (256) ---->  recv bytes
+                                  |
+                                  | traffic: record_received
+                                  | events: publish Data(Received)
+                                  | build WriteRequest(Forwarded)
+                                  | SideHandle(B).deliver(request)
+                                  v
+                                 writes: mpsc<WriteRequest> (256) --> recv request
+                                                                        |
+                                                                        | write_all(bytes)
+                                                                        | request.delivered()
+                                                                        v
+                                                           traffic: record_delivered
+                                                           events: publish Data(Forwarded)
+```
+
+Two details matter here.
+
+1. The `Received` event is published when the chunk arrives. The `Forwarded` event is published only after the write to the destination succeeds. A failed write never produces a success event.
+2. `deliver` uses `try_send`. If B is slow and its write queue is full, the chunk is dropped and counted. The reader on A is never blocked by a slow B.
+
+The full details are in [Bridge engine](/docs/developer/core/bridge-engine).
+
+## Process model
+
+Rift uses tokio for the engine and plain OS threads for logging.
+
+For each running profile (`Bridge`):
+
+| Task | Spawned in | Job |
+| --- | --- | --- |
+| endpoint task A | `SideControl::open` | Runs `endpoint::run` for side A. Owns the socket or port. |
+| endpoint task B | `SideControl::open` | Same for side B. |
+| relay task A | `Bridge::start_with_outlet` | Moves A's reads and state changes onward. Writes to B's queue. |
+| relay task B | `Bridge::start_with_outlet` | Same for B to A. |
+
+An endpoint task can spawn more tasks. The TCP server spawns one `serve_client` task per accepted client.
+
+Per host, outside any profile:
+
+| Task or thread | Job |
+| --- | --- |
+| `Logger` worker thread | Owns the sinks. Receives log commands over a bounded `std::sync::mpsc` channel. |
+| HTTP sink worker thread | Batches and POSTs log lines. Only exists while the HTTP sink is enabled. |
+| `Logger::watch` task | Turns lifecycle events and traffic counters into log records. |
+| `ControlServer` accept loop | Serves `rift inject` and `rift workflow` requests on `127.0.0.1`. |
+| workflow tasks | One per running workflow. |
+| event printer or forwarder | CLI prints events. Desktop batches them to the webview. |
+
+### Channels
+
+| Channel | Type | Capacity | Direction |
+| --- | --- | --- | --- |
+| reads | `tokio::sync::mpsc<Bytes>` | 256 | endpoint to relay |
+| writes | `tokio::sync::mpsc<WriteRequest>` | 256 | relay or `inject` to endpoint |
+| states | `tokio::sync::mpsc<ConnectionState>` | 256 | endpoint to relay |
+| state watch | `tokio::sync::watch<ConnectionState>` | latest value only | relay to `SideHandle::status` |
+| events | `tokio::sync::broadcast<Event>` | 4096 in `Rift`, 1024 for a detached `Bridge` | all producers to all subscribers |
+| lifecycle events | `tokio::sync::broadcast<Event>` | same as events | same, without `Event::Data` |
+| per-client writes (TCP server) | `tokio::sync::broadcast<WriteRequest>` | 256 | server task to client tasks |
+| log commands | `std::sync::mpsc::sync_channel` | 10 000 | any thread to logger thread |
+
+Bounded channels are the backpressure policy. Each overflow has a defined result: drop and count (writes), lag and skip (broadcast), drop and count (log queue). Nothing grows without limit.
+
+### Cancellation
+
+Shutdown uses `tokio_util::sync::CancellationToken`. `Bridge` holds a parent token. Each opened side gets a child token. Cancelling the parent stops both endpoint tasks. A separate `relay_cancel` token stops the relay tasks, and it is cancelled only after the endpoint tasks have finished, so queued state changes are not lost.
+
+`Rift` adds a per-profile `lifetime` token. Workflows take child tokens of it, so stopping a profile stops its workflows.
+
+## Where state lives
+
+| State | Owner | Notes |
+| --- | --- | --- |
+| Profiles on disk | `ProfileStore` in `profile.rs` | One TOML file. CLI reads it at start. Desktop holds it in `AppState.store`. |
+| Running profiles | `Rift.bridges` | `HashMap<String, RunningProfile>` behind a mutex. |
+| Side runtime status | `SideHandle` in `bridge.rs` | A `watch` channel plus a peer counter. |
+| Traffic counters | `TrafficRegistry` | Atomics per profile and side. Survive profile restarts. |
+| Logging config | `Logger` | `RwLock<LoggingConfig>`. Can be swapped at runtime. |
+| Running workflows | `Workflows.registry` | Keyed by profile and workflow name. |
+| Control socket records | files in the hosts directory | One JSON file per host process. |
+
+The engine does not write profiles to disk. Hosts decide when to save.

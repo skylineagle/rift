@@ -1,0 +1,99 @@
+---
+title: State flow
+description: How an engine event becomes pixels, and how a click becomes an engine change.
+---
+
+This page follows two paths through the desktop app: events from the engine to the screen, and actions from the screen to the engine.
+
+## Engine event to UI
+
+Take a chunk that arrives on side A and is forwarded to B.
+
+```text
+ 1. endpoint task A reads bytes                       (rift-core, endpoint/*)
+ 2. relay_side publishes Data(Received)               (bridge.rs)
+ 3. endpoint task B writes, request.delivered()
+    publishes Data(Forwarded)                         (endpoint/link.rs)
+ 4. Rift events channel (broadcast, 4096)             (outlet.rs)
+ 5. forward_events: EventBatch.push()                 (event_forwarder.rs)
+ 6. every 50 ms: encode(), Channel.send()             (event_batch.rs)
+ 7. eventStream.receive(): decodeEventBatch()         (stores/eventStream.ts)
+ 8. batch listeners: bridgeStore, logStore            (applyEvent, appendRows)
+    event listeners: particle canvas, workflow store
+ 9. useStore selectors notice a changed reference
+10. React renders the changed components
+```
+
+What each store does with it:
+
+| Store | Reaction |
+| --- | --- |
+| `bridgeStore` | `applyEvent` updates side status for `status` events and byte counters for `data` events. `recordRate` feeds a one-second sample window. |
+| `logStore` | `rowFromEvent` makes a row. Rows are capped by count and by payload bytes. |
+| particle canvas | Spawns a particle for the forwarded chunk. |
+| `workflowRunStore` | Only reacts to `workflow` events. |
+
+### Counters and rates
+
+`bridgeStore.applyEvent` counts differently from the engine counters in `traffic.rs`. Per profile and side:
+
+- `received` grows on `origin === "received"`, by the source side.
+- `sent` grows on events that are not `received` and are `delivered`, by the target side.
+
+Rates are computed in the frontend from samples. Samples older than 1 second (`RATE_WINDOW_MS`) are dropped. A direction with no activity for 5 seconds (`RATE_IDLE_MS`) reads zero. A timer refreshes rates at most every 250 ms, and stops when everything is idle. Skipped summaries count too, using their `length`, so a burst that was folded still shows the right rate.
+
+### Back pressure on the UI path
+
+Three limits keep a flood from freezing the UI. Each degrades to counts, not to a crash.
+
+| Layer | Limit | On overflow |
+| --- | --- | --- |
+| Engine broadcast | 4096 events | Subscriber gets `Lagged(n)`. |
+| One batch | 500 data rows, 4 MiB | Oldest data rows become a `skipped` summary. |
+| `logStore` per profile | 10 000 rows, 32 MiB of payload | Oldest rows are discarded (`newestWithinLimits`). |
+
+A lagged count reaches the UI as a status row in the log: "N events not shown, the log fell behind". A skipped summary becomes a single summarized row.
+
+### Hydration at startup
+
+Events only describe changes. On load, `bridgeStore` calls `bridgeStatus()` once and `hydrateBridge` marks each running profile with its current side states. So a webview reload does not show a running bridge as stopped. `workflowRunStore.refreshRuns` does the same for workflows: it fetches `running_workflows` and merges events that arrived during the fetch (`reconcileWorkflowRuns`).
+
+## UI action to engine
+
+Take the user toggling side B off while the profile runs. The path is `profilesStore.setSideEnabled`:
+
+```text
+ click SideToggle
+   -> profilesStore.setSideEnabled(name, "B", false)
+   -> runSideAction (queued per profile: previous action must settle first)
+        api.setSideEnabled(name, "B", false)    -> Rift::set_side_enabled -> Bridge::disable
+        pauseSide(name, "B")                    -> zero counters and rates for that side
+        persistNow(profile with b.enabled=false) -> save_profile -> ProfileStore::save
+   -> if both sides are now off: api.stopProfile, markStopped
+```
+
+Points that explain the design:
+
+- Actions on one profile are chained through a `Promise` map (`actions`), so rapid clicks never interleave backend calls.
+- `pendingSides` disables the toggle while an action runs.
+- The engine call and the file write are separate commands. The frontend calls both and keeps them consistent.
+- `pausedSides` stores a boundary time. Events from before a resume are ignored by the counters, so late events from the old connection do not inflate the new one.
+
+### Editing a side while running
+
+`updateEndpoint` applies the edit in memory, schedules a debounced save (`persistSoon`, 400 ms) and, if the side is active, runs `runSideAction(name, side, false)`. That pauses the side so the old endpoint is not left running with a stale config. The user turns it back on, which calls `set_side_enabled(..., true)`. The backend re-reads the stored profile and calls `Rift::configure_side` with the new config. The other side is not touched. The integration test `each_side_can_start_alone_and_reconfigure_without_disconnecting_its_peer` covers that engine behaviour.
+
+### Starting and stopping
+
+| Action | Frontend | Backend |
+| --- | --- | --- |
+| Start | `markRunning`, `api.startProfile` | `profile_lifecycle::start`: `Rift::start`, then autostart workflows |
+| Stop | `api.stopProfile`, `markStopped` | `profile_lifecycle::stop`: `stop_profile` on workflows, then `Rift::stop` |
+| Restart | `api.restartProfile` | stop, then start, from the stored profile |
+| Inject | `api.inject` | `Rift::inject` with a parsed payload |
+
+`markRunning` runs before the backend call returns. The UI shows "connecting" at once, and real status events replace it.
+
+## Remote changes
+
+The CLI and the control socket change the engine without the UI. `rift inject` goes to `Rift::inject`, the same call as the inject bar. Its events flow through the same path above, so injections made from a terminal show in the log with origin `injected`. Edits to `rift.toml` from outside are not watched. The UI reads profiles on load.
