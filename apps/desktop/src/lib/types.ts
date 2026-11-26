@@ -42,12 +42,66 @@ export type UartEndpoint = SideSwitch & {
   flow_control: FlowControl;
 };
 
+export type WireFormat = "binary" | "text" | "base64" | "hex" | "json";
+export type JsonValue = "text" | "base64" | "hex" | "json";
+export type MessageFormat = {
+  format: WireFormat;
+  json_field: string;
+  json_value: JsonValue;
+};
+export type WebSocketClientEndpoint = SideSwitch &
+  MessageFormat & {
+    kind: "websocket-client";
+    url: string;
+    reconnect_delay_ms: number;
+    connect_timeout_ms: number;
+  };
+export type WebSocketServerEndpoint = SideSwitch &
+  MessageFormat & {
+    kind: "websocket-server";
+    bind: string;
+    path: string | null;
+    max_clients: number | null;
+  };
+export type ExchangeKind = "direct" | "fanout" | "topic" | "headers";
+export type QueueKind = "classic" | "quorum" | "stream";
+export type RabbitMqEndpoint = SideSwitch & {
+  kind: "rabbitmq";
+  url: string;
+  exchange: string;
+  exchange_type: ExchangeKind;
+  declare_exchange: boolean;
+  routing_key: string;
+  queue: string | null;
+  declare_queue: boolean;
+  queue_type: QueueKind;
+  durable: boolean;
+  exclusive: boolean;
+  auto_delete: boolean;
+  binding_key: string | null;
+  message_ttl_ms: number | null;
+  expires_ms: number | null;
+  max_length: number | null;
+  max_length_bytes: number | null;
+  dead_letter_exchange: string | null;
+  dead_letter_routing_key: string | null;
+  max_priority: number | null;
+  prefetch: number;
+  persistent: boolean;
+  content_type: string | null;
+  reconnect_delay_ms: number;
+  connect_timeout_ms: number;
+};
+
 export type Endpoint =
   | TcpClientEndpoint
   | TcpServerEndpoint
   | UdpClientEndpoint
   | UdpServerEndpoint
-  | UartEndpoint;
+  | UartEndpoint
+  | WebSocketClientEndpoint
+  | WebSocketServerEndpoint
+  | RabbitMqEndpoint;
 
 export type EndpointKind = Endpoint["kind"];
 

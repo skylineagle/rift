@@ -1,0 +1,20 @@
+# Consume a quorum queue bound to a topic exchange and stream it to a TCP collector.
+# Bytes coming back from the collector are published to the same exchange as `rift.replies`.
+[[profile]]
+name = "queue-to-collector"
+b = { kind = "tcp-client", address = "collector.example.com:7000" }
+
+[profile.a]
+kind = "rabbitmq"
+url = "amqp://guest:guest@localhost:5672"
+exchange = "telemetry"
+exchange_type = "topic"
+declare_exchange = true
+routing_key = "rift.replies"
+queue = "rift.telemetry"
+queue_type = "quorum"
+binding_key = "sensor.#"
+message_ttl_ms = 600000
+max_length = 100000
+dead_letter_exchange = "telemetry.dlx"
+prefetch = 100

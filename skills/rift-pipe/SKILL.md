@@ -34,6 +34,9 @@ rift pipe <endpoint-a> <endpoint-b> [--name <label>] [--log text|hex|json] [--qu
 | `udp://host:port[?bind=0.0.0.0:7000]` | UDP to a fixed peer |
 | `udp-server://0.0.0.0:5000` | UDP listener, replies to known peers |
 | `uart:///dev/ttyUSB0?baud=115200` | Serial port (`COM3` style on Windows: `uart://COM3?baud=9600`) |
+| `ws://host:port/path` / `wss://...` | WebSocket client, reconnects; `format=binary\|text\|base64\|hex\|json` |
+| `ws-server://0.0.0.0:8080[/path]` | WebSocket listener, broadcasts to all clients |
+| `amqp://user:pass@host:5672/vhost` / `amqps://...` | RabbitMQ: consume `queue`, publish to `exchange` + `routing_key` |
 
 Options are URI query params. Full list in [references/endpoints.md](references/endpoints.md).
 

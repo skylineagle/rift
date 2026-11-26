@@ -76,7 +76,7 @@ export const SideCard: FC<SideCardProps> = ({ profileName, side, endpoint }) => 
         </div>
         {edited && <span className={cn("text-[11px] font-medium", mirrored ? "text-ba" : "text-ab")}>Edited</span>}
         <StatusPill kind={endpoint.kind} status={runtime.status} />
-        {endpoint.kind === "tcp-server" && runtime.status === "connected" && <span className="shrink-0 rounded-md bg-[color-mix(in_srgb,var(--ok)_14%,transparent)] px-1.5 py-1 text-[10px] text-ok">● <strong className="text-[11px] font-bold">{runtime.peers.length}</strong> {runtime.peers.length === 1 ? "client" : "clients"}</span>}
+        {(endpoint.kind === "tcp-server" || endpoint.kind === "websocket-server") && runtime.status === "connected" && <span className="shrink-0 rounded-md bg-[color-mix(in_srgb,var(--ok)_14%,transparent)] px-1.5 py-1 text-[10px] text-ok">● <strong className="text-[11px] font-bold">{runtime.peers.length}</strong> {runtime.peers.length === 1 ? "client" : "clients"}</span>}
         <SideToggle profileName={profileName} side={side} enabled={enabled} pending={pending} />
       </header>
       <div

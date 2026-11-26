@@ -1,10 +1,9 @@
-use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 
 use crate::endpoint::{
-    Endpoint, ReplyTo, TcpClientConfig, TcpServerConfig, UartConfig, UdpClientConfig,
-    UdpServerConfig,
+    Endpoint, MessageFormat, RabbitMqConfig, ReplyTo, TcpClientConfig, TcpServerConfig, UartConfig,
+    UdpClientConfig, UdpServerConfig, WebSocketClientConfig, WebSocketServerConfig,
 };
 use crate::error::{Error, Result};
 use crate::side_config::SideConfig;
@@ -13,22 +12,36 @@ fn invalid(message: impl Into<String>) -> Error {
     Error::InvalidUri(message.into())
 }
 
-struct Options(HashMap<String, String>);
+struct Options(Vec<(String, String)>);
 
 impl Options {
     fn parse(query: &str) -> Result<Self> {
-        let mut options = HashMap::new();
+        let mut options = Vec::new();
         for pair in query.split('&').filter(|pair| !pair.is_empty()) {
             let (key, value) = pair
                 .split_once('=')
                 .ok_or_else(|| invalid(format!("option `{pair}` needs a value")))?;
-            options.insert(key.to_string(), value.to_string());
+            options.retain(|(existing, _): &(String, String)| existing != key);
+            options.push((key.to_string(), value.to_string()));
         }
         Ok(Self(options))
     }
 
     fn take(&mut self, key: &str) -> Option<String> {
-        self.0.remove(key)
+        let index = self.0.iter().position(|(existing, _)| existing == key)?;
+        Some(self.0.remove(index).1)
+    }
+
+    fn take_text(&mut self, key: &str, default: &str) -> String {
+        self.take(key).unwrap_or_else(|| default.to_string())
+    }
+
+    fn drain_query(&mut self) -> String {
+        std::mem::take(&mut self.0)
+            .into_iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join("&")
     }
 
     fn take_parsed<T: FromStr>(&mut self, key: &str, default: T) -> Result<T> {
@@ -51,8 +64,8 @@ impl Options {
     }
 
     fn finish(self) -> Result<()> {
-        match self.0.into_keys().next() {
-            Some(key) => Err(invalid(format!("unknown option `{key}`"))),
+        match self.0.into_iter().next() {
+            Some((key, _)) => Err(invalid(format!("unknown option `{key}`"))),
             None => Ok(()),
         }
     }
@@ -119,6 +132,86 @@ fn parse_udp_server(location: &str, options: &mut Options) -> Result<UdpServerCo
     })
 }
 
+fn parse_message_format(options: &mut Options) -> Result<MessageFormat> {
+    let defaults = MessageFormat::default();
+    Ok(MessageFormat {
+        format: options.take_parsed("format", defaults.format)?,
+        json_field: options.take_text("json_field", &defaults.json_field),
+        json_value: options.take_parsed("json_value", defaults.json_value)?,
+    })
+}
+
+fn parse_websocket_client(
+    scheme: &str,
+    location: &str,
+    options: &mut Options,
+) -> Result<WebSocketClientConfig> {
+    let defaults = WebSocketClientConfig::new(String::new());
+    let reconnect_delay_ms =
+        options.take_parsed("reconnect_delay_ms", defaults.reconnect_delay_ms)?;
+    let connect_timeout_ms =
+        options.take_parsed("connect_timeout_ms", defaults.connect_timeout_ms)?;
+    let message = parse_message_format(options)?;
+    let passthrough = options.drain_query();
+    let separator = if passthrough.is_empty() { "" } else { "?" };
+    Ok(WebSocketClientConfig {
+        url: format!(
+            "{scheme}://{}{separator}{passthrough}",
+            require_location(location)?
+        ),
+        reconnect_delay_ms,
+        connect_timeout_ms,
+        message,
+    })
+}
+
+fn parse_websocket_server(location: &str, options: &mut Options) -> Result<WebSocketServerConfig> {
+    let location = require_location(location)?;
+    let (bind, path) = match location.split_once('/') {
+        Some((bind, path)) if !path.is_empty() => (bind.to_string(), Some(format!("/{path}"))),
+        Some((bind, _)) => (bind.to_string(), None),
+        None => (location, None),
+    };
+    Ok(WebSocketServerConfig {
+        path,
+        max_clients: options.take_optional("max_clients")?,
+        message: parse_message_format(options)?,
+        ..WebSocketServerConfig::new(bind)
+    })
+}
+
+fn parse_rabbitmq(scheme: &str, location: &str, options: &mut Options) -> Result<RabbitMqConfig> {
+    let defaults = RabbitMqConfig::new(format!("{scheme}://{}", require_location(location)?));
+    Ok(RabbitMqConfig {
+        exchange: options.take_text("exchange", &defaults.exchange),
+        exchange_type: options.take_parsed("exchange_type", defaults.exchange_type)?,
+        declare_exchange: options.take_parsed("declare_exchange", defaults.declare_exchange)?,
+        routing_key: options.take_text("routing_key", &defaults.routing_key),
+        queue: options.take("queue"),
+        declare_queue: options.take_parsed("declare_queue", defaults.declare_queue)?,
+        queue_type: options.take_parsed("queue_type", defaults.queue_type)?,
+        durable: options.take_parsed("durable", defaults.durable)?,
+        exclusive: options.take_parsed("exclusive", defaults.exclusive)?,
+        auto_delete: options.take_parsed("auto_delete", defaults.auto_delete)?,
+        binding_key: options.take("binding_key"),
+        message_ttl_ms: options.take_optional("message_ttl_ms")?,
+        expires_ms: options.take_optional("expires_ms")?,
+        max_length: options.take_optional("max_length")?,
+        max_length_bytes: options.take_optional("max_length_bytes")?,
+        dead_letter_exchange: options.take("dead_letter_exchange"),
+        dead_letter_routing_key: options.take("dead_letter_routing_key"),
+        max_priority: options.take_optional("max_priority")?,
+        prefetch: options.take_parsed("prefetch", defaults.prefetch)?,
+        persistent: options.take_parsed("persistent", defaults.persistent)?,
+        content_type: options.take("content_type"),
+        reconnect_delay_ms: options
+            .take_parsed("reconnect_delay_ms", defaults.reconnect_delay_ms)?,
+        connect_timeout_ms: options
+            .take_parsed("connect_timeout_ms", defaults.connect_timeout_ms)?,
+        ..defaults
+    })
+}
+
 fn split_uri(input: &str) -> Result<(&str, &str, Options)> {
     let (scheme, rest) = input
         .split_once("://")
@@ -137,6 +230,11 @@ fn build_endpoint(scheme: &str, location: &str, options: &mut Options) -> Result
         }),
         "udp-server" => Endpoint::UdpServer(parse_udp_server(location, options)?),
         "uart" => Endpoint::Uart(parse_uart(location, options)?),
+        "ws" | "wss" => {
+            Endpoint::WebsocketClient(parse_websocket_client(scheme, location, options)?)
+        }
+        "ws-server" => Endpoint::WebsocketServer(parse_websocket_server(location, options)?),
+        "amqp" | "amqps" => Endpoint::Rabbitmq(parse_rabbitmq(scheme, location, options)?),
         other => return Err(invalid(format!("unknown scheme `{other}`"))),
     })
 }
@@ -190,6 +288,73 @@ impl Query {
             self.0.push(format!("{key}={value}"));
         }
     }
+
+    fn push_message_format(&mut self, message: &MessageFormat) {
+        let defaults = MessageFormat::default();
+        self.push_if("format", message.format, defaults.format);
+        self.push_if("json_field", &message.json_field, &defaults.json_field);
+        self.push_if("json_value", message.json_value, defaults.json_value);
+    }
+
+    fn after(&self, url: &str) -> String {
+        match (self.0.is_empty(), url.contains('?')) {
+            (true, _) => String::new(),
+            (false, true) => format!("&{}", self.0.join("&")),
+            (false, false) => self.to_string(),
+        }
+    }
+}
+
+fn rabbitmq_query(config: &RabbitMqConfig) -> Query {
+    let defaults = RabbitMqConfig::new(String::new());
+    let mut query = Query::default();
+    query.push_if("exchange", &config.exchange, &defaults.exchange);
+    query.push_if(
+        "exchange_type",
+        config.exchange_type,
+        defaults.exchange_type,
+    );
+    query.push_if(
+        "declare_exchange",
+        config.declare_exchange,
+        defaults.declare_exchange,
+    );
+    query.push_if("routing_key", &config.routing_key, &defaults.routing_key);
+    query.push_some("queue", config.queue.as_ref());
+    query.push_if(
+        "declare_queue",
+        config.declare_queue,
+        defaults.declare_queue,
+    );
+    query.push_if("queue_type", config.queue_type, defaults.queue_type);
+    query.push_if("durable", config.durable, defaults.durable);
+    query.push_if("exclusive", config.exclusive, defaults.exclusive);
+    query.push_if("auto_delete", config.auto_delete, defaults.auto_delete);
+    query.push_some("binding_key", config.binding_key.as_ref());
+    query.push_some("message_ttl_ms", config.message_ttl_ms);
+    query.push_some("expires_ms", config.expires_ms);
+    query.push_some("max_length", config.max_length);
+    query.push_some("max_length_bytes", config.max_length_bytes);
+    query.push_some("dead_letter_exchange", config.dead_letter_exchange.as_ref());
+    query.push_some(
+        "dead_letter_routing_key",
+        config.dead_letter_routing_key.as_ref(),
+    );
+    query.push_some("max_priority", config.max_priority);
+    query.push_if("prefetch", config.prefetch, defaults.prefetch);
+    query.push_if("persistent", config.persistent, defaults.persistent);
+    query.push_some("content_type", config.content_type.as_ref());
+    query.push_if(
+        "reconnect_delay_ms",
+        config.reconnect_delay_ms,
+        defaults.reconnect_delay_ms,
+    );
+    query.push_if(
+        "connect_timeout_ms",
+        config.connect_timeout_ms,
+        defaults.connect_timeout_ms,
+    );
+    query
 }
 
 impl fmt::Display for Query {
@@ -248,6 +413,32 @@ impl fmt::Display for Endpoint {
                 config.stop_bits,
                 config.flow_control
             ),
+            Endpoint::WebsocketClient(config) => {
+                let defaults = WebSocketClientConfig::new(String::new());
+                let mut query = Query::default();
+                query.push_if(
+                    "reconnect_delay_ms",
+                    config.reconnect_delay_ms,
+                    defaults.reconnect_delay_ms,
+                );
+                query.push_if(
+                    "connect_timeout_ms",
+                    config.connect_timeout_ms,
+                    defaults.connect_timeout_ms,
+                );
+                query.push_message_format(&config.message);
+                write!(formatter, "{}{}", config.url, query.after(&config.url))
+            }
+            Endpoint::WebsocketServer(config) => {
+                let mut query = Query::default();
+                query.push_some("max_clients", config.max_clients);
+                query.push_message_format(&config.message);
+                let path = config.path.as_deref().unwrap_or("");
+                write!(formatter, "ws-server://{}{path}{query}", config.bind)
+            }
+            Endpoint::Rabbitmq(config) => {
+                write!(formatter, "{}{}", config.url, rabbitmq_query(config))
+            }
         }
     }
 }
@@ -270,6 +461,14 @@ mod tests {
             "udp-server://0.0.0.0:5000?reply_to=last&peer_timeout_secs=30",
             "uart:///dev/ttyUSB0?baud=115200&parity=even&data_bits=7&stop_bits=2&flow=hardware",
             "uart://COM3?baud=9600&parity=none&data_bits=8&stop_bits=1&flow=none",
+            "ws://localhost:8080/feed",
+            "wss://example.com/socket?token=abc&format=json&json_field=payload.raw&json_value=base64",
+            "ws://h:1?reconnect_delay_ms=250&format=hex",
+            "ws-server://0.0.0.0:8080",
+            "ws-server://0.0.0.0:8080/feed?max_clients=4&format=json&json_value=json",
+            "amqp://guest:guest@localhost:5672/vhost",
+            "amqps://u:p@broker/vh?exchange=events&exchange_type=topic&declare_exchange=true&routing_key=a.b&queue=q1&queue_type=quorum&binding_key=a.*&message_ttl_ms=1000&max_length=10&dead_letter_exchange=dlx&prefetch=5&persistent=true&content_type=application/json",
+            "amqp://h?queue=&declare_queue=false&durable=false&exclusive=true&auto_delete=true",
         ];
         for uri in uris {
             let endpoint: Endpoint = uri.parse().unwrap();
@@ -332,6 +531,33 @@ mod tests {
     }
 
     #[test]
+    fn websocket_details() {
+        let Endpoint::WebsocketClient(client) = "wss://h/x?token=1&format=base64".parse().unwrap()
+        else {
+            panic!("expected websocket client");
+        };
+        assert_eq!(client.url, "wss://h/x?token=1");
+        assert_eq!(client.message.format, crate::endpoint::WireFormat::Base64);
+        let Endpoint::WebsocketServer(server) = "ws-server://0.0.0.0:1/feed".parse().unwrap()
+        else {
+            panic!("expected websocket server");
+        };
+        assert_eq!(server.bind, "0.0.0.0:1");
+        assert_eq!(server.path.as_deref(), Some("/feed"));
+    }
+
+    #[test]
+    fn rabbitmq_defaults() {
+        let Endpoint::Rabbitmq(config) = "amqp://h?queue=q".parse().unwrap() else {
+            panic!("expected rabbitmq");
+        };
+        assert_eq!(config.url, "amqp://h");
+        assert_eq!(config.queue.as_deref(), Some("q"));
+        assert!(config.declare_queue && config.durable && !config.declare_exchange);
+        assert_eq!(config.prefetch, 50);
+    }
+
+    #[test]
     fn uart_defaults() {
         let endpoint: Endpoint = "uart://COM3?baud=9600".parse().unwrap();
         assert_eq!(
@@ -363,6 +589,13 @@ mod tests {
             "tcp-server://h:1?max_clients=many",
             "udp-server://h:1?reply_to=nobody",
             "udp-server://h:1?peer_timeout_secs=-1",
+            "ws://",
+            "ws://h:1?format=xml",
+            "ws-server://h:1?json_value=yaml",
+            "amqp://h?queue_type=lazy",
+            "amqp://h?exchange_type=x",
+            "amqp://h?prefetch=-1",
+            "amqp://h?nope=1",
         ] {
             assert!(uri.parse::<Endpoint>().is_err(), "{uri}");
         }

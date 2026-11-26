@@ -1,0 +1,6 @@
+# Broadcast a serial device to every WebSocket client on /serial.
+# Clients receive {"data": "<base64>"} and may send the same shape back to the UART.
+[[profile]]
+name = "serial-over-websocket"
+a = { kind = "websocket-server", bind = "0.0.0.0:8080", path = "/serial", format = "json", json_field = "data", json_value = "base64" }
+b = { kind = "uart", port = "/dev/ttyUSB0", baud_rate = 115200 }

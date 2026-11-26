@@ -25,8 +25,9 @@ pub use bridge::{Bridge, BridgeStatus, SideStatus};
 pub use config_import::{prepare_config_import, ConfigImportError, MAX_CONFIG_IMPORT_BYTES};
 pub use config_path::resolve_config_path;
 pub use endpoint::{
-    Endpoint, FlowControl, Parity, ReplyTo, TcpClientConfig, TcpServerConfig, UartConfig,
-    UdpClientConfig, UdpServerConfig,
+    Endpoint, ExchangeKind, FlowControl, JsonValue, MessageFormat, Parity, QueueKind,
+    RabbitMqConfig, ReplyTo, TcpClientConfig, TcpServerConfig, UartConfig, UdpClientConfig,
+    UdpServerConfig, WebSocketClientConfig, WebSocketServerConfig, WireFormat,
 };
 pub use error::{Error, Result};
 pub use event::{ConnectionState, Event, Origin, WorkflowState};

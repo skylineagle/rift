@@ -21,6 +21,9 @@ b = { kind = "udp-server", bind = "0.0.0.0:5001" }
 | `udp-client` | `remote` | `bind` (auto) |
 | `udp-server` | `bind` | `reply_to` (`all` / `last`), `peer_timeout_secs` |
 | `uart` | `port`, `baud_rate` | `data_bits` (8), `parity` (`none`/`odd`/`even`), `stop_bits` (1/2), `flow_control` (`none`/`software`/`hardware`) |
+| `websocket-client` | `url` (`ws://` / `wss://`) | `format` (`binary`/`text`/`base64`/`hex`/`json`), `json_field` (`data`), `json_value` (`text`/`base64`/`hex`/`json`), `reconnect_delay_ms` (1000), `connect_timeout_ms` (5000) |
+| `websocket-server` | `bind` | `path` (any), `max_clients` (unlimited), `format`, `json_field`, `json_value` |
+| `rabbitmq` | `url` (`amqp://` / `amqps://`) | `exchange`, `exchange_type` (`direct`), `declare_exchange` (false), `routing_key`, `queue`, `declare_queue` (true), `queue_type` (`classic`/`quorum`/`stream`), `durable` (true), `exclusive`, `auto_delete`, `binding_key`, `message_ttl_ms`, `expires_ms`, `max_length`, `max_length_bytes`, `max_priority`, `dead_letter_exchange`, `dead_letter_routing_key`, `prefetch` (50), `persistent`, `content_type`, `reconnect_delay_ms`, `connect_timeout_ms` |
 
 Every side also takes `enabled` (default `true`).
 

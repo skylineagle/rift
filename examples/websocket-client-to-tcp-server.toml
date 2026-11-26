@@ -1,0 +1,5 @@
+# Expose a remote WebSocket text feed as a local TCP port.
+[[profile]]
+name = "websocket-feed"
+a = { kind = "websocket-client", url = "wss://feed.example.com/stream?token=abc", format = "text", reconnect_delay_ms = 500 }
+b = { kind = "tcp-server", bind = "127.0.0.1:9000" }
