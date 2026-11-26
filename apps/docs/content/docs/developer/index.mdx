@@ -1,0 +1,100 @@
+---
+title: Developer manual
+description: How Rift works inside. Architecture, the bridge engine, the CLI, the desktop app, tests and releases.
+---
+
+import { File, Folder, Files } from 'fumadocs-ui/components/files';
+
+This manual explains how Rift is built. It is for people who change Rift or embed `rift-core`. If you only want to use Rift, read the user manual.
+
+Rift joins two endpoints, side A and side B, and moves bytes both ways. One Rust library, `rift-core`, does all of that work. The CLI, the desktop app and the container image are thin hosts around it.
+
+## What this manual covers
+
+<Cards>
+  <Card title="Architecture" href="/docs/developer/architecture">
+    The big picture: crates, hosts, data flow and the task and channel model.
+  </Card>
+  <Card title="Core engine" href="/docs/developer/core">
+    One page per subsystem of `rift-core`: bridge, endpoints, URIs, profiles, manager, events, payloads, workflows, control socket, logging.
+  </Card>
+  <Card title="CLI" href="/docs/developer/cli">
+    How `crates/rift-cli` parses commands, hosts the engine, reaches a running instance and updates itself.
+  </Card>
+  <Card title="Desktop app" href="/docs/developer/desktop">
+    The Tauri backend, the React frontend and how an engine event becomes pixels.
+  </Card>
+  <Card title="Testing" href="/docs/developer/testing">
+    Test layout, how to run it all, and the benchmark harness.
+  </Card>
+  <Card title="Building and release" href="/docs/developer/building-and-release">
+    Dev setup, building each artifact, the release workflow and signing secrets.
+  </Card>
+  <Card title="Contributing" href="/docs/developer/contributing">
+    Repo conventions, how to add an endpoint kind and how to add a control command.
+  </Card>
+</Cards>
+
+## Repository layout
+
+<Files>
+  <Folder name="crates" defaultOpen>
+    <Folder name="rift-core" defaultOpen>
+      <File name="Cargo.toml (package rift-bridge-core, lib rift_core)" />
+      <Folder name="src">
+        <File name="bridge.rs" />
+        <File name="manager.rs" />
+        <File name="event.rs" />
+        <File name="traffic.rs" />
+        <File name="outlet.rs" />
+        <File name="profile.rs" />
+        <File name="uri.rs" />
+        <File name="payload.rs" />
+        <File name="workflow.rs" />
+        <File name="workflow_runner.rs" />
+        <Folder name="endpoint" />
+        <Folder name="control" />
+        <Folder name="logging" />
+      </Folder>
+      <Folder name="tests" />
+    </Folder>
+    <Folder name="rift-cli" defaultOpen>
+      <File name="build.rs" />
+      <Folder name="src" />
+    </Folder>
+  </Folder>
+  <Folder name="apps">
+    <Folder name="desktop">
+      <Folder name="src (React and TypeScript)" />
+      <Folder name="src-tauri (Rust)" />
+    </Folder>
+    <Folder name="docs (this site)" />
+  </Folder>
+  <Folder name="bench (separate Cargo workspace)" />
+  <Folder name="examples (sample configs)" />
+  <Folder name="skills (agent skills)" />
+  <Folder name=".github" />
+  <File name="Dockerfile" />
+  <File name="docker-compose.yml" />
+  <File name="Cargo.toml (workspace)" />
+</Files>
+
+The root `Cargo.toml` is a workspace with three members: `crates/rift-core`, `crates/rift-cli` and `apps/desktop/src-tauri`. All three share one version, set in `[workspace.package]`. `bench/` has its own `[workspace]` table, so it is not part of the main build.
+
+| Path | Package | Role |
+| --- | --- | --- |
+| `crates/rift-core` | `rift-bridge-core` (lib name `rift_core`) | Engine, profiles, payloads, workflows, control socket, logging |
+| `crates/rift-cli` | `rift-cli` (binary `rift`) | Command line host |
+| `apps/desktop/src-tauri` | `rift-desktop` (lib `rift_desktop_lib`) | Tauri backend that hosts the engine |
+| `apps/desktop/src` | `rift-desktop` (npm) | React frontend |
+| `bench` | `rift-bench` | Throughput, CPU and memory benchmarks against a built `rift` binary |
+
+The workspace dependency table renames the core package so other crates write `rift-core` in their manifests and `rift_core` in code:
+
+```toml
+rift-core = { package = "rift-bridge-core", path = "crates/rift-core", version = "0.2.1" }
+```
+
+## Reading order
+
+Start with [Architecture](/docs/developer/architecture). Then read [Bridge engine](/docs/developer/core/bridge-engine) and [Endpoints](/docs/developer/core/endpoints). Everything else builds on those two.

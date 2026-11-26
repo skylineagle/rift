@@ -1,0 +1,54 @@
+---
+title: Logging settings
+description: Configure console, file and HTTP log sinks from the desktop app.
+---
+
+![Logging settings dialog](/screenshots/desktop-logging.png)
+
+Open **Logging settings** from the profiles sidebar. The dialog edits the `[logging]` section of the shared config file, so the CLI uses the same settings. See [Logging](/docs/user/logging) for what is logged.
+
+All sinks are off until you turn one on. Press **Save** to apply, or **Cancel** to discard. A toast confirms **Logging settings saved**. Invalid fields are flagged, and the Save button stays disabled until they are fixed.
+
+## General
+
+| Field | Config key | Default | Meaning |
+| --- | --- | --- | --- |
+| Level | `level` | Info | Debug, Info, Warn or Error. |
+| Stats interval | `stats_interval_secs` | 60 s | How often traffic statistics are written. `0` turns them off. |
+
+## Destinations
+
+The dialog has a tab for each destination. A tab shows whether it is enabled.
+
+### Console
+
+| Field | Config key | Meaning |
+| --- | --- | --- |
+| Write to console | `console.enabled` | Turn the sink on. |
+| Console format | `console.format` | Text or JSON. Written to stderr. |
+
+### File
+
+| Field | Config key | Meaning |
+| --- | --- | --- |
+| Write to files | `file.enabled` | Turn the sink on. |
+| Directory | `file.directory` | Where files go. Empty uses `<OS local data dir>/rift/logs`. |
+| File name | `file.file_name` | A name without slashes. Empty uses `rift-desktop.log` in the app. |
+| Rotate | `file.rotate` | Rotation policy: size, hourly or daily. |
+| Max file size | `file.max_file_bytes` | Used when rotating by size. |
+| Keep files | `file.max_files` | Rotated files kept. |
+| Max total storage | `file.max_total_bytes` | Optional cap across all files. Empty means no cap. |
+
+### HTTP
+
+| Field | Config key | Meaning |
+| --- | --- | --- |
+| Send over HTTP | `http.enabled` | Turn the sink on. |
+| URL | `http.url` | Must start with `http://` or `https://`. |
+| Body format | `http.format` | NDJSON or JSON array. |
+| Batch size | `http.batch_size` | Records per request. |
+| Flush interval | `http.flush_interval_secs` | Send a partial batch after this long. |
+| Timeout | `http.timeout_secs` | Request timeout. |
+| Headers | `http.headers` | Name and value pairs. Every header needs a name, and names must be unique. |
+
+Field limits and defaults match [Configuration](/docs/user/configuration#logging).

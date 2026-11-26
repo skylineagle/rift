@@ -1,0 +1,46 @@
+---
+title: Injecting data
+description: Send text, hex, binary or file data into a running bridge from the inject bar, repeat sends, and reuse recent injections.
+---
+
+![Inject bar with payload and recent injections](/screenshots/desktop-inject.png)
+
+The inject bar sits at the bottom of the profile view. It is enabled when the bridge is running. Before that, it says **Start the bridge to inject**.
+
+## Send once
+
+1. Pick the target in **Inject into**: side A, side B or both.
+2. Pick the **Payload format**: text, hex, binary or file.
+3. Enter the payload.
+4. Press **Enter** (or the send button).
+
+Formats and escapes work as described in [Injection](/docs/user/injection#payload-formats). For the file format, use **Choose file…** to pick a file.
+
+The bar previews the bytes it is about to send, and shows an error under the field when the payload is invalid, for example an odd number of hex digits.
+
+## Recent injections
+
+The app remembers the last 8 injections per profile. Open **Recent injections** to see them and use **Send again**. Press **ArrowUp** in an empty payload field to load the most recent one. If you have sent nothing yet it shows **Nothing sent yet**.
+
+## Repeat a send
+
+Use **Repeat a send** to send on a timer. Choose the send step (target, format, payload), the interval in **Every**, and either **Forever** or **Count** with a number of **Times**.
+
+- **Create** saves it as a workflow on the profile.
+- **Create & run** saves it and starts it. This is only available while the bridge runs.
+
+The result is an ordinary [workflow](/docs/user/desktop/workflows). It is the same as `rift inject ... --every` with a saved name.
+
+## Switching a side on or off
+
+Use the play or pause button on the side card. See [Profiles and endpoints](/docs/user/desktop/profiles-and-endpoints).
+
+## From the CLI
+
+The running app accepts commands from the terminal:
+
+```sh
+rift inject "Untitled bridge" a text 'PING\r\n'
+```
+
+Quote profile names that contain spaces.

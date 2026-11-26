@@ -1,0 +1,57 @@
+---
+title: Profiles and endpoints
+description: Create, rename, copy and delete profiles in the desktop app, and configure each side's endpoint.
+---
+
+![Endpoint editor for side A and side B](/screenshots/desktop-endpoint-editor.png)
+
+## Create a profile
+
+Click **Create your first bridge** in the empty state, or the add button in the profiles sidebar. A new profile is named `Untitled bridge` (numbered if that name exists), with a TCP server on side A (`0.0.0.0:9000`) and a serial endpoint on side B. Change both to what you need.
+
+Profiles are saved to the config file as you edit them.
+
+## Rename, copy, delete
+
+- **Rename**: double-click the profile name in the sidebar. A name cannot be empty. You cannot rename a profile while its bridge is running.
+- **Copy**: the copy button on the profile row.
+- **Delete**: the delete button on the profile row.
+
+## Configure a side
+
+Each side card shows the endpoint kind, an address and a status pill. Pick the kind with the endpoint selector: **TCP client**, **TCP server**, **UDP client**, **UDP server** or **Serial**. Changing the kind resets the endpoint to that kind's defaults and keeps the side's on or off state.
+
+Fields per kind, with the same names and defaults as in [Endpoints](/docs/user/endpoints):
+
+| Kind | Fields |
+| --- | --- |
+| TCP client | Remote host and port, Reconnect delay (ms), Connect timeout (ms), TCP no delay |
+| TCP server | Local bind host and port, Max clients, TCP no delay |
+| UDP client | Remote host and port, local bind |
+| UDP server | Local bind host and port, Reply to (`all` or `last`), Peer timeout (s) |
+| Serial | Port, Baud rate, Data bits, Parity, Stop bits, Flow control |
+
+Less common options are under an **Advanced** section.
+
+### Serial ports
+
+The **Port** field offers a list of detected serial ports, and **Rescan ports** refreshes it. Baud rate has a field and a set of common rates.
+
+## Start, pause and apply changes
+
+Each side has a play or pause button.
+
+- **Play** on a side starts the bridge for the profile if it is not running, and starts that side.
+- **Pause** closes the side. The side reports `disabled`. This is the same as `enabled = false` in the config, and the app saves it.
+- When you edit a running side, the app pauses it and marks it **Edited**. Press **Play** to apply the changes.
+
+The status pill on each side shows `listening`, `connecting`, `connected`, `disconnected`, `error` or `disabled`. A TCP server also shows the number of connected clients. Under each card, the arrows show received (down) and sent (up) rate and total bytes since that side was last paused. Sent includes injections.
+
+## CLI equivalents
+
+| App | CLI |
+| --- | --- |
+| Create a profile | `rift profile add <name> <a> <b>` |
+| Delete a profile | `rift profile remove <name>` |
+| Play | `rift run <name>` |
+| Pause a side | `<name>:a off` on stdin |

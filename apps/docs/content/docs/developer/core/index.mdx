@@ -1,0 +1,37 @@
+---
+title: Core engine
+description: A map of the rift-core crate, one page per subsystem.
+---
+
+`crates/rift-core` is the package `rift-bridge-core`. Its library name is `rift_core`. It has no UI and no process lifecycle code. Hosts bring those.
+
+| Subsystem | Files | Page |
+| --- | --- | --- |
+| Bridge engine | `bridge.rs`, `outlet.rs`, `peers.rs`, `drops.rs`, `side.rs`, `side_config.rs` | [Bridge engine](/docs/developer/core/bridge-engine) |
+| Endpoints | `endpoint/*` | [Endpoints](/docs/developer/core/endpoints) |
+| URIs | `uri.rs` | [URIs and parsing](/docs/developer/core/uris) |
+| Profiles and config | `profile.rs`, `config_import.rs`, `config_path.rs` | [Profiles and config](/docs/developer/core/profiles-and-config) |
+| Manager | `manager.rs` | [Manager](/docs/developer/core/manager) |
+| Events and traffic | `event.rs`, `traffic.rs` | [Events and traffic](/docs/developer/core/events-and-traffic) |
+| Payloads | `payload.rs`, `format.rs` | [Payloads](/docs/developer/core/payloads) |
+| Workflows | `workflow.rs`, `workflow_runner.rs` | [Workflows](/docs/developer/core/workflows) |
+| Control socket | `control/*` | [Control socket](/docs/developer/core/control-socket) |
+| Logging | `logging/*` | [Logging pipeline](/docs/developer/core/logging) |
+
+Two smaller files do not need a page:
+
+- `error.rs` defines `Error`, a `thiserror` enum. It implements `Serialize` as a plain string, so Tauri commands can return `rift_core::Result` directly and the frontend gets the message text.
+- `serial.rs` has `list_serial_ports()`, which maps `tokio_serial::available_ports()` to `SerialPortInfo` with `name`, `kind` (`usb`, `pci`, `bluetooth` or `unknown`) and an optional `description`.
+
+## Dependency direction
+
+```text
+manager  ->  bridge  ->  endpoint/*  ->  link, stream, backoff
+   |            |
+   |            +-> outlet (events, traffic, logger)
+   +-> workflow_runner  ->  workflow  ->  payload
+   +-> logging
+control/*  ->  manager, workflow_runner, payload, logging
+```
+
+`control/*` depends on `Rift` and `Workflows`. `Rift` knows nothing about the control socket.

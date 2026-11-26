@@ -1,0 +1,90 @@
+---
+title: Manager
+description: Rift in manager.rs, the multi-profile registry that hosts share events, traffic counters and one logger across bridges.
+---
+
+`Rift` (`crates/rift-core/src/manager.rs`) is the type hosts hold. It runs many bridges at once and gives them shared services.
+
+```rust
+pub struct Rift {
+    bridges: Mutex<HashMap<String, RunningProfile>>,
+    events: EventChannels,
+    traffic: TrafficRegistry,
+    logger: Logger,
+}
+
+struct RunningProfile {
+    bridge: Arc<Bridge>,
+    profile: Profile,
+    lifetime: CancellationToken,
+}
+```
+
+- `bridges` maps profile name to the running bridge, a copy of the profile it started from, and a lifetime token.
+- `events` is one `EventChannels` of capacity 4096 for all profiles. Subscribers filter by the `profile` field in each event.
+- `traffic` is the shared `TrafficRegistry`.
+- `logger` is the host's `Logger`. `Rift::new()` uses `Logger::disabled()`, and `Rift::with_logger(logger)` takes a configured one.
+
+## Starting a profile
+
+```rust
+pub fn start(&self, profile: Profile) -> Result<()> {
+    let mut bridges = self.bridges.lock().unwrap();
+    if bridges.contains_key(&profile.name) {
+        return Err(Error::AlreadyRunning(profile.name));
+    }
+    self.logger.log(profile_record("profile.started", "started", &profile));
+    let outlet = Outlet {
+        events: self.events.clone(),
+        traffic: self.traffic.counters(&profile.name),
+        logger: Some(self.logger.clone()),
+    };
+    let bridge = Arc::new(Bridge::start_with_outlet(profile.clone(), outlet));
+    // insert RunningProfile with a new lifetime token
+    Ok(())
+}
+```
+
+`start` is synchronous. It spawns tasks with `tokio::spawn`, so it must run inside a tokio runtime. It returns before any endpoint has connected.
+
+The `Outlet` is how a bridge gets the shared services. `traffic.counters(name)` returns the same `Arc<ProfileCounters>` for a name every time, so counters keep accumulating across stop and start.
+
+## Stopping
+
+`stop(name)` removes the entry under the lock, calls `end()` on it, then awaits `bridge.stop()` outside the lock. `end()` cancels the `lifetime` token. Workflows hold child tokens of that, so they see cancellation immediately. `stop_all()` does the same for every profile. Both log `profile.stopped`.
+
+Holding the std `Mutex` only for the map change, never across an `.await`, is what makes these methods safe to call from async code.
+
+## Runtime side changes
+
+```rust
+pub async fn set_side_enabled(&self, name: &str, side: Side, enabled: bool) -> Result<()>;
+pub async fn configure_side(&self, name: &str, side: Side, config: SideConfig) -> Result<()>;
+```
+
+Both call `update_running`, which locks the map, updates the stored `Profile` copy and logs a `side.enabled` or `side.disabled` record, then returns the `Arc<Bridge>`. The bridge call happens after the lock is released. The stored copy is what shows up in later logs. It is not written to disk.
+
+## Injection
+
+`inject(name, target, bytes)` finds the bridge and calls `Bridge::inject`. It returns `NotRunning` when there is no such profile.
+
+`inject_unless_cancelled` is the `pub(crate)` variant that the workflow runner uses. It checks the workflow's cancellation token while holding the bridges lock, so a stopped workflow cannot slip one more send through.
+
+## Observing
+
+| Method | Returns |
+| --- | --- |
+| `subscribe()` | `broadcast::Receiver<Event>` with every event, including `Data`. |
+| `subscribe_lifecycle()` | Same, minus `Data`. |
+| `traffic()` | Snapshot `BTreeMap<String, ProfileTraffic>`. |
+| `traffic_registry()` | A clone of the registry, for the logger watcher. |
+| `running()` | Sorted profile names. |
+| `status()` | `Vec<BridgeStatus>` sorted by profile name. |
+| `logger()` | The shared `Logger`. |
+
+`publish(event)` is `pub(crate)`. The workflow runner uses it to publish `Event::Workflow` through the same channels as everything else.
+
+## Concurrency notes
+
+- One `Rift` is shared as `Arc<Rift>` between the host, `Workflows` and the `ControlServer`.
+- A profile name can only run once at a time per `Rift`. Two hosts (for example the CLI and the desktop app) each have their own `Rift`, so nothing stops both from running the same profile. They would fight over the same ports.

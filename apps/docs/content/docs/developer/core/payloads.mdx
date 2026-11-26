@@ -1,0 +1,62 @@
+---
+title: Payloads
+description: How payload.rs turns text, hex, binary and file input into bytes, and how format.rs renders bytes back.
+---
+
+A payload is the input a user types to inject bytes. `crates/rift-core/src/payload.rs` converts it to `Vec<u8>`. Injection from the CLI, the desktop, workflows and the control socket all share it.
+
+```rust
+pub enum PayloadFormat { Text, Hex, Binary, File }
+
+pub fn parse_payload(format: PayloadFormat, input: &str) -> Result<Vec<u8>>
+```
+
+`PayloadFormat` serializes lowercase: `text`, `hex`, `binary`, `file`. Its `FromStr` also accepts `bin` as an alias for `binary`, case-insensitive. Unknown names give `Error::InvalidPayload`.
+
+## Formats
+
+| Format | Input | Rules |
+| --- | --- | --- |
+| `text` | A string with escapes | `\r`, `\n`, `\t`, `\\`, `\0` and `\xNN` (two hex digits). Other characters are written as UTF-8. An unknown escape or a trailing backslash is an error. |
+| `hex` | Hex digits | Tokens may be separated by whitespace, `,` or `:`. A `0x` or `0X` prefix on a token is stripped. An odd digit count is an error. |
+| `binary` | Bit groups | Whitespace-separated groups of at most 8 bits. Each group becomes one byte. |
+| `file` | A path | The whole file is read with `fs::read`. |
+
+Hex is deliberately tolerant. These all parse to `de ad be ef`:
+
+```text
+de ad be ef
+DE:AD:BE:EF
+0xde, 0xad, 0xbe, 0xef
+deadbeef
+```
+
+### File payloads and the control socket
+
+A `file` payload reads from the process that parses it. With `rift inject`, that process is the running instance, not the CLI call. A relative path would resolve against the wrong directory. So `crates/rift-cli/src/inject_cli.rs` canonicalizes the path first:
+
+```rust
+fn resolve_payload(format: PayloadFormat, payload: String) -> Result<String> {
+    if format != PayloadFormat::File { return Ok(payload); }
+    let path = Path::new(&payload).canonicalize()
+        .with_context(|| format!("cannot read payload file `{payload}`"))?;
+    // ... into_string, requiring valid UTF-8
+}
+```
+
+The control server then calls `parse_payload` itself (`control/server/dispatch.rs`). Payloads are always parsed on the instance that injects. Only strings and a format name cross the wire, which also keeps requests small.
+
+## Where parsing happens
+
+| Caller | File |
+| --- | --- |
+| Stdin commands in `rift run` | `crates/rift-cli/src/inject_command.rs` |
+| Control socket `inject` | `crates/rift-core/src/control/server/dispatch.rs` |
+| Workflow steps | `crates/rift-core/src/workflow.rs` (`WorkflowStep::prepare`) |
+| Desktop `inject` and `preview_payload` commands | `apps/desktop/src-tauri/src/commands.rs` |
+
+The desktop `preview_payload` command lets the UI show the exact bytes before sending.
+
+## Rendering bytes
+
+`crates/rift-core/src/format.rs` is the reverse direction, for display. `escaped_ascii` and `hex_dump_line` are used by the CLI's `render.rs` for `--log text` and `--log hex`. They are `pub` so any host can reuse them.

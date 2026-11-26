@@ -1,0 +1,69 @@
+---
+title: Concepts
+description: Endpoints, sides, profiles, the config file and the status events Rift reports.
+---
+
+## Endpoints
+
+An endpoint is one end of a connection. Rift has five kinds:
+
+| Kind | URI scheme | TOML `kind` | Role |
+| --- | --- | --- | --- |
+| TCP client | `tcp://` | `tcp-client` | Connects out, reconnects with backoff |
+| TCP server | `tcp-server://` | `tcp-server` | Listens, accepts many clients |
+| UDP client | `udp://` | `udp-client` | Sends to one fixed remote address |
+| UDP server | `udp-server://` | `udp-server` | Listens, answers the peers it has heard from |
+| Serial | `uart://` | `uart` | Opens a serial port, reopens it if it drops |
+
+Details and every option are in [Endpoints](/docs/user/endpoints).
+
+## Sides
+
+A bridge connects two endpoints, called side **A** and side **B**. Data received on one side is written to the other. Neither side is special: any kind can be on either side.
+
+Each side has a switch. A side with `enabled = false` stays closed. Data heading to it is dropped and the side reports `disabled`. You can switch a side on or off while the bridge runs.
+
+## Profiles
+
+A profile is a named bridge: a name, side A, side B, and optionally [workflows](/docs/user/workflows). Profiles live in the config file. The CLI and the desktop app read and write the same file, so a profile you add with `rift profile add` appears in the app.
+
+You can also run a bridge without saving anything with `rift pipe`. It is a profile named `adhoc` (change it with `--name`) that exists only while the command runs.
+
+## Config file
+
+Rift resolves the config file path in this order:
+
+1. `--config <path>` or `-c <path>`
+2. The `RIFT_CONFIG` environment variable
+3. `rift/rift.toml` inside the OS config directory
+
+The OS config directory is `~/.config` on Linux, `~/Library/Application Support` on macOS and `%APPDATA%` on Windows.
+
+The file holds `[[profile]]` tables and an optional `[logging]` section. See [Configuration](/docs/user/configuration).
+
+`rift profile add` creates the file if it does not exist. `rift run` fails if it does not.
+
+## Status events
+
+Rift reports what each side is doing. Every status event carries the profile, the side and one of these states:
+
+| State | Meaning |
+| --- | --- |
+| `disabled` | The side is switched off. |
+| `listening` | A server is bound and waiting for peers. |
+| `connecting` | A client is trying to connect, or a serial port is being opened. |
+| `connected <peer>` | A peer is attached. |
+| `disconnected` | The peer went away. A server goes back to `listening`. |
+| `error: <message>` | Something failed, such as a refused connection, a busy port, or a rejected extra client. |
+
+Besides status, Rift emits:
+
+- **Data** events: bytes that a side received, bytes forwarded to the other side, and bytes you injected. Each is marked delivered or not.
+- **Dropped** events: a consumer fell behind and some chunks were dropped.
+- **Workflow** events: started, step, finished, stopped or failed.
+
+The CLI prints these events to stdout (`--log text|hex|json`). The desktop app shows them in the traffic log. Structured [logging](/docs/user/logging) can also write them to a console, a file or an HTTP endpoint.
+
+## Same machine control
+
+`rift inject` and `rift workflow` talk to a Rift that is already running on the same machine: `rift run`, `rift pipe` or the desktop app. See [Injection](/docs/user/injection).

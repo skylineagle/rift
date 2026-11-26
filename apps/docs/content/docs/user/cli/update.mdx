@@ -1,0 +1,35 @@
+---
+title: rift update
+description: Check for a newer Rift release and replace the CLI binary.
+---
+
+```sh
+rift update [--check]
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--check` | Only report whether a newer release exists. Do not download anything. |
+
+`rift update` asks GitHub for the latest release and compares it to your version.
+
+- If you are up to date it prints `rift <version> is up to date`.
+- If a newer version exists and Rift was installed from a release archive, it downloads the archive for your platform, verifies its SHA-256 checksum, and replaces the running binary. Then restart any running `rift` processes.
+- If Rift was installed another way, it prints the right upgrade step instead of replacing anything.
+
+| Where `rift` lives | What `rift update` prints |
+| --- | --- |
+| Release archive (for example `/usr/local/bin`) | updates in place |
+| `~/.cargo/bin` | run `cargo install rift-cli --force` |
+| Inside the desktop app | update the Rift desktop app, it ships this CLI |
+| `/usr/bin` (`.deb`, `.rpm`) | install the new Rift package from the release page |
+
+If the folder holding the binary is not writable, you get `cannot write to <dir>, try again with sudo`.
+
+## Update notices
+
+`rift run` and `rift pipe` print a one-line notice on stderr when a newer release exists. The check runs at most once every 24 hours, and only when stderr is a terminal. Hide the notice with:
+
+```sh
+export RIFT_NO_UPDATE_CHECK=1
+```

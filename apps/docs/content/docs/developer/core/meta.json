@@ -1,0 +1,16 @@
+{
+  "title": "Core engine",
+  "pages": [
+    "index",
+    "bridge-engine",
+    "endpoints",
+    "uris",
+    "profiles-and-config",
+    "manager",
+    "events-and-traffic",
+    "payloads",
+    "workflows",
+    "control-socket",
+    "logging"
+  ]
+}

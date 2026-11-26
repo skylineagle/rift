@@ -1,0 +1,133 @@
+---
+title: Configuration
+description: Reference for rift.toml. Profiles, endpoints, workflows and logging sinks.
+---
+
+Rift reads one TOML file. Where the file lives is described in [Concepts](/docs/user/concepts#config-file). The CLI and desktop app share it.
+
+A complete, commented example is in [`examples/rift.toml`](https://github.com/skylineagle/rift/blob/main/examples/rift.toml).
+
+## Layout
+
+```toml
+[[profile]]
+name = "gps"
+a = { kind = "tcp-server", bind = "0.0.0.0:9000" }
+b = { kind = "uart", port = "/dev/ttyUSB0", baud_rate = 9600 }
+
+[[profile.workflows]]
+name = "heartbeat"
+steps = [
+  { action = "send", target = "Both", format = "text", payload = "PING\\r\\n" },
+  { action = "wait", millis = 1000 },
+]
+
+[logging]
+level = "info"
+```
+
+Other top-level sections are kept untouched when Rift rewrites the file.
+
+<Callout type="warn">
+When Rift saves the file (`rift profile add|remove`, or edits in the desktop app) it rewrites the whole file. Comments you added by hand are not preserved.
+</Callout>
+
+## `[[profile]]`
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `name` | yes | Unique name. Adding a name that exists is an error. |
+| `a` | yes | Side A. An inline table: `kind`, the endpoint keys, and optional `enabled`. |
+| `b` | yes | Side B. Same shape as `a`. |
+| `workflows` | no | Array of workflow tables, written `[[profile.workflows]]`. |
+
+### Side tables
+
+`kind` is one of `tcp-client`, `tcp-server`, `udp-client`, `udp-server`, `uart`. `enabled` defaults to `true`.
+
+| `kind` | Keys (default) |
+| --- | --- |
+| `tcp-client` | `address`, `reconnect_delay_ms` (1000), `connect_timeout_ms` (5000), `no_delay` (true) |
+| `tcp-server` | `bind`, `max_clients` (unlimited), `no_delay` (true) |
+| `udp-client` | `remote`, `bind` (auto) |
+| `udp-server` | `bind`, `reply_to` (`all`), `peer_timeout_secs` (none) |
+| `uart` | `port`, `baud_rate`, `data_bits` (8), `parity` (`none`), `stop_bits` (1), `flow_control` (`none`) |
+
+Meanings and valid values are in [Endpoints](/docs/user/endpoints).
+
+## `[[profile.workflows]]`
+
+A workflow belongs to the `[[profile]]` table above it.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `name` | required | Workflow name. Cannot be empty. |
+| `autostart` | `false` | Start together with the profile. |
+| `repeat` | forever | Number of cycles. Omit to loop forever. |
+| `steps` | required | At least one step. |
+
+Steps are inline tables with an `action`:
+
+| Action | Keys | Notes |
+| --- | --- | --- |
+| `send` | `target`, `format`, `payload` | `target` is `A`, `B` or `Both` (capitalized). `format` is `text`, `hex`, `binary` or `file` (lowercase). |
+| `wait` | `millis` | Pause in milliseconds. |
+
+A workflow that loops forever (no `repeat`) must contain a `wait` longer than 0 ms. See [Workflows](/docs/user/workflows).
+
+<Callout type="info">
+In TOML the binary format is written `binary`. On the command line and in stdin commands you can write `bin` or `binary`.
+</Callout>
+
+In a TOML basic string, a backslash starts an escape. To send the two characters `\r\n` to the payload parser, write `\\r\\n`.
+
+## `[logging]`
+
+Logging is off until you enable a sink. All keys are optional.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `level` | `info` | `debug`, `info`, `warn` or `error` |
+| `stats_interval_secs` | `60` | Seconds between traffic statistics records. `0` means no stats. |
+
+### `[logging.console]`
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Turn the sink on. |
+| `format` | `text` | `text` or `json`. Written to stderr. |
+
+### `[logging.file]`
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Turn the sink on. |
+| `directory` | `<OS local data dir>/rift/logs` | Directory for log files. |
+| `file_name` | `rift-cli.log` (CLI) or `rift-desktop.log` (desktop) | Log file name. |
+| `rotate` | `size` | `size`, `hourly` or `daily`. |
+| `max_file_bytes` | `10485760` | Size limit per file. Used when `rotate = "size"`. |
+| `max_files` | `10` | Rotated files kept. `0` keeps all. |
+| `max_total_bytes` | none | Optional cap across all log files. |
+
+### `[logging.http]`
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Turn the sink on. |
+| `url` | `http://localhost:8080` | Where to send records. |
+| `format` | `ndjson` | `ndjson` or `json-array`. |
+| `batch_size` | `100` | Records per request. |
+| `flush_interval_secs` | `5` | Send a partial batch after this long. |
+| `timeout_secs` | `10` | Request timeout. |
+| `headers` | none | Extra headers, for example `{ Authorization = "ApiKey xyz" }`. |
+
+More on what gets logged in [Logging](/docs/user/logging).
+
+## Validating a file
+
+```sh
+rift profile list -c ./rift.toml
+rift workflow list -c ./rift.toml
+```
+
+A parse error is printed and the command exits with an error.

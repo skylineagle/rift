@@ -1,0 +1,32 @@
+---
+title: Config import
+description: Import profiles from a TOML file into the desktop app by button or drag and drop.
+---
+
+You can bring profiles from another `rift.toml` into the app without editing your own config by hand.
+
+## Import a file
+
+- Click **Import configuration** in the profiles sidebar and choose a file, or
+- Drag a file onto the app. The overlay says **Drop to import**.
+
+Drop one file at a time. The app shows **Drop one configuration file at a time** if you drop more.
+
+## What is accepted
+
+- A TOML file with at least one `[[profile]]` table, in the same format as the [config file](/docs/user/configuration).
+- Up to 1 MiB.
+- Profile names cannot be empty.
+
+Other formats, such as JSON, are rejected with an "Unsupported configuration format; Rift imports TOML profile files" error. Syntax errors and schema errors name the problem.
+
+## What happens to the profiles
+
+- The profiles, including their workflows, are added to your config.
+- If an imported name already exists, the profile is renamed by adding a number: `gps` becomes `gps 2`, then `gps 3`.
+- The import is atomic. If anything is invalid, nothing is added.
+- Only `[[profile]]` tables are imported. A `[logging]` section in the imported file is ignored.
+
+## Try it
+
+The repository's `examples/` folder has ready files to import, such as `examples/combos/sensor-gateway.toml`. See [Examples](/docs/user/examples).

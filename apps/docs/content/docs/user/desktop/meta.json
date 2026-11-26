@@ -1,0 +1,13 @@
+{
+  "title": "Desktop app",
+  "pages": [
+    "index",
+    "profiles-and-endpoints",
+    "live-traffic",
+    "injecting",
+    "workflows",
+    "logging-settings",
+    "config-import",
+    "updates"
+  ]
+}

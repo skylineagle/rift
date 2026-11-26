@@ -14,6 +14,8 @@ Created in [T3 Code](https://t3.codes).
   <a href="showcase/video/out/promo/v1/promo.mp4">Watch the 30s demo</a> · <a href="showcase/deck">Slide deck</a> (open-slide: <code>cd showcase/deck && bun install && bun run dev</code>)
 </p>
 
+**[Documentation](https://skylineagle.github.io/rift/)**: user manual and developer manual (source in [`apps/docs`](apps/docs)).
+
 ## Install
 
 Download from the [latest release](https://github.com/skylineagle/rift/releases/latest):

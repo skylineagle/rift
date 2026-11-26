@@ -1,0 +1,239 @@
+---
+title: Contributing
+description: Conventions observed in the repository, a step-by-step guide to adding an endpoint kind, and how to add a control command.
+---
+
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+## Before you open a pull request
+
+Run what CI runs (see [Building and release](/docs/developer/building-and-release)):
+
+```sh
+cargo fmt --all
+cargo clippy --workspace --exclude rift-desktop --all-targets -- -D warnings
+cargo test --workspace --exclude rift-desktop
+cd apps/desktop && bun run build && bun run test
+```
+
+Pull requests also run the [benchmark comparison](/docs/developer/testing). A change on the data path should not make throughput or CPU per MB/s worse.
+
+## Conventions seen in the code
+
+These are patterns the existing code follows. Match them.
+
+### Rust
+
+- No comments. Code is made readable with small functions and clear names. The Rust sources contain no `//` comments. If something needs explaining, split it or rename it.
+- Names are whole words: `reconnect_delay`, `peer_timeout_secs`, `undelivered_reason`. No abbreviations.
+- Internals are `pub(crate)` or private. `lib.rs` re-exports the public surface explicitly. Add to `pub use` only what hosts need.
+- Errors go through the `Error` enum in `error.rs` with `thiserror`. Add a variant instead of returning strings.
+- One responsibility per file. `endpoint/` has one file per kind, `logging/` has one per sink.
+- Defaults live in constructors (`TcpClientConfig::new`) and `#[serde(default = "...")]` functions, and the URI parser reuses them.
+- Tests sit in a `#[cfg(test)] mod tests` at the bottom of the file they test. Cross-component tests go in `crates/rift-core/tests/`.
+- Test names are sentences that state the behaviour: `failed_stream_write_never_emits_forwarded_success`.
+- Locks are `std::sync::Mutex` held for short, synchronous sections, never across `.await`. Use `tokio::sync::Mutex` only when a guard must cross an await, as `SideControl.running` does.
+- Bounded channels everywhere. Decide what happens on overflow and make it visible, either as `Event::Dropped` or as a counter.
+
+### TypeScript and React
+
+- TypeScript only. There is no `any` in `apps/desktop/src`.
+- One component per file, named in PascalCase, with an exported `<Component>Props` type declared above it. Components are typed with `FC<Props>`.
+- No `useEffect`. State that depends on events lives in stores that subscribe at module level. Components read through `useStore` and selectors.
+- Stores use `createStore`. Do not add a state library.
+- Components never call `invoke`. They call functions from `lib/tauriApi.ts`, usually via a store action.
+- Types in `lib/types.ts` mirror the serde shapes in Rust. Change both together.
+
+### Repository
+
+- The CLI and the desktop app must stay thin. Behaviour that both need goes in `rift-core`.
+- Sample configs in `examples/` are loaded by a test. Keep them valid.
+- User-visible changes belong in `README.md`, the user manual and, where relevant, `skills/`.
+
+## Add a new endpoint kind
+
+This walks through a hypothetical `ws-client` (a WebSocket client). Each step names the file you touch. Use an existing kind as the template: TCP client for a connect-and-pump kind, UDP server for a datagram kind.
+
+<Steps>
+<Step>
+
+### Define the config type
+
+Create `crates/rift-core/src/endpoint/ws_client.rs`. A config struct derives the same traits as the others and gives every optional field a default function:
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WsClientConfig {
+    pub url: String,
+    #[serde(default = "default_reconnect_delay_ms")]
+    pub reconnect_delay_ms: u64,
+}
+
+impl WsClientConfig {
+    pub fn new(url: String) -> Self { /* defaults */ }
+}
+```
+
+Share default functions with other kinds when the meaning is the same. `tcp_server.rs` imports `default_no_delay` from `tcp_client.rs`.
+
+</Step>
+<Step>
+
+### Implement the run function
+
+Write `pub(crate) async fn run(config: WsClientConfig, link: Link)` following the Link contract from [Endpoints](/docs/developer/core/endpoints).
+
+If the kind is "connect, then pump bytes, then reconnect", build on `run_client`. You supply a `connect` closure that returns something `AsyncRead + AsyncWrite`, and you get reconnect with backoff, state reporting, peer counting and queue draining for free:
+
+```rust
+pub(crate) async fn run(config: WsClientConfig, link: Link) {
+    let delay = Duration::from_millis(config.reconnect_delay_ms);
+    run_client(config.url.clone(), link, delay, || connect(&config)).await;
+}
+```
+
+If the kind is message-based, write the loop yourself as `udp_client.rs` does. The rules:
+
+- Report state with `context.report`.
+- Call `context.peers.joined()` and `left()`.
+- Call `request.delivered()` after each successful write. Skip it on failure.
+- Exit on `context.cancel.cancelled()`.
+- Forward reads with `context.forward(bytes)`.
+
+</Step>
+<Step>
+
+### Register it in the enum
+
+In `crates/rift-core/src/endpoint/mod.rs`, add `mod ws_client;`, a `pub use ws_client::WsClientConfig;`, a variant `WsClient(WsClientConfig)` and a match arm in `run`. The serde attribute `rename_all = "kebab-case"` makes the TOML kind `ws-client`.
+
+Export the config from `crates/rift-core/src/lib.rs` in the `pub use endpoint::{...}` list.
+
+</Step>
+<Step>
+
+### Add URI support
+
+In `crates/rift-core/src/uri.rs`:
+
+1. Add a `parse_ws_client` function that builds from `WsClientConfig::new(...)` and takes options with `take_parsed`.
+2. Add a `"ws"` arm in `build_endpoint`.
+3. Add a `Display` arm for the new variant, using `Query::push_if` so defaults are omitted.
+4. Add example URIs to the `round_trips` test.
+
+`options.finish()` already rejects unknown options for you. See [URIs and parsing](/docs/developer/core/uris).
+
+</Step>
+<Step>
+
+### Check for exhaustive matches
+
+The compiler finds most spots. One is not found by the compiler: `SideControl::open` in `bridge.rs` sets `tcp_server` with `matches!(..., Endpoint::TcpServer(_))`. That flag only controls the "listening but has no connected clients" message. If your kind is a listener with the same meaning, extend it.
+
+Check `Rift` logging too: `profile_record` uses `endpoint.to_string()`, which works once `Display` is done.
+
+</Step>
+<Step>
+
+### Add tests
+
+- Unit tests next to the endpoint if it has parsing or state logic.
+- An integration test in `crates/rift-core/tests/bridge.rs` that starts a pair with `start_pair`, waits for the connected state with `wait_for`, sends bytes through and asserts the `Forwarded` event.
+- A sample config under `examples/` (the `examples.rs` test loads it). For example `examples/ws-client-to-uart.toml`.
+
+</Step>
+<Step>
+
+### Update the desktop app
+
+Rust types flow through serde automatically, but the frontend lists kinds by hand:
+
+- `apps/desktop/src/lib/types.ts`: add `WsClientEndpoint` to the `Endpoint` union.
+- `apps/desktop/src/lib/endpointKinds.ts`: add the entry to `ENDPOINT_KINDS`, a case in `defaultEndpoint`, and a case in `endpointAddress`. TypeScript will flag the non-exhaustive switches.
+- `apps/desktop/src/components/WsClientFields.tsx`: a new component with a `WsClientFieldsProps` type, and a case in `EndpointFields.tsx`.
+- `EndpointSelector.tsx` groups kinds by protocol and role. Extend it if the new kind does not fit.
+- `lib/sideStatus.ts` has kind-specific wording. Check `sideDetail`.
+
+</Step>
+<Step>
+
+### Document it
+
+Update `README.md`, the user manual's endpoints page, and `skills/rift-pipe/references/endpoints.md`.
+
+</Step>
+</Steps>
+
+## Add a control command
+
+A control command is a request that `rift` can send to a running instance. The flow is described in [Control socket](/docs/developer/core/control-socket). Example: a `traffic` command that returns the traffic counters of a running instance.
+
+<Steps>
+<Step>
+
+### Add the request variant
+
+In `crates/rift-core/src/control/protocol.rs`, add a variant to `ControlRequest`:
+
+```rust
+Traffic,
+```
+
+The enum is tagged with `type` and kebab-cased, so the wire name is `traffic`. A variant can carry fields, as `Inject` does. Add a case to the `requests_use_the_wire_shape` test so the JSON shape is pinned.
+
+Keep requests small. The whole envelope, including the token, must stay under 64 KiB.
+
+</Step>
+<Step>
+
+### Handle it on the server
+
+In `crates/rift-core/src/control/server/dispatch.rs`, add an arm to `dispatch` and a function that does the work against `context.rift` or `context.workflows`:
+
+```rust
+ControlRequest::Traffic => traffic(context).map(Some),
+
+fn traffic(context: &Context) -> Result<Value> {
+    serde_json::to_value(context.rift.traffic()).map_err(|error| Error::Control(error.to_string()))
+}
+```
+
+Return `Ok(None)` for no data or `Ok(Some(value))` for data. For commands that act on a profile, call `ensure_running` first, so a missing profile becomes `Error::NotRunning`, which sets `not_running: true` in the response. The client uses that to try other hosts.
+
+`dispatch` is synchronous: `respond` in `server.rs` calls it directly and only `serve_connection` is async. A command that must await, such as `Rift::set_side_enabled`, needs `respond` and `dispatch` to become async first. Write a log record for state changes with `context.rift.logger().log(...)`, as `inject` does with `control.inject`.
+
+If the command needs a new error, add a variant to `Error` in `error.rs`. If it should map to `not_running`, add it to `ControlResponse::failure`.
+
+</Step>
+<Step>
+
+### Add the CLI command
+
+In `crates/rift-cli`:
+
+1. Add the arguments to `arguments.rs`. Use value types that already implement `FromStr`, such as `Target` and `PayloadFormat`.
+2. Add a function, in a file named for the command (see `workflow_command.rs`), that calls `rift_core::control::send(ControlRequest::...)` and prints a short result line.
+3. Dispatch to it in `main.rs`.
+
+`send` already handles host discovery, stale files and the "not running anywhere" message. If your command needs custom wording for that last case, extend `unanswered` in `crates/rift-core/src/control/client.rs`.
+
+</Step>
+<Step>
+
+### Test it
+
+Add a case to `crates/rift-core/src/control/tests.rs`. `serves_requests_end_to_end` shows the pattern: start a `ControlServer` in a temp hosts directory with `start_in`, call `send_in` from `spawn_blocking`, and assert the effect on the `Rift`. The client uses blocking sockets, so run it off the async runtime.
+
+</Step>
+<Step>
+
+### Desktop
+
+The desktop app gets the new command for free, because it also starts a `ControlServer` that uses the same `dispatch`. Add a Tauri command only if the UI needs the action too, in `commands.rs`, and register it in `lib.rs`.
+
+</Step>
+</Steps>
+
+## Add a Tauri command
+
+For completeness: write the function in `apps/desktop/src-tauri/src/commands.rs` (or one of the `*_commands.rs` files), return `rift_core::Result<T>`, add it to the list in `tauri::generate_handler![...]` in `lib.rs`, add a typed wrapper in `apps/desktop/src/lib/tauriApi.ts` and call that wrapper from a store action.

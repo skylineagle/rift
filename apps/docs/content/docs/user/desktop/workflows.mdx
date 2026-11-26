@@ -1,0 +1,54 @@
+---
+title: Workflows in the app
+description: Create, edit, run and stop workflows in the desktop app, and how they map to the config file.
+---
+
+![Workflows panel with a heartbeat workflow](/screenshots/desktop-workflows.png)
+
+Workflows are the same as the ones in the config file. See [Workflows](/docs/user/workflows) for the format. Open the panel with the **Workflows** button. It appears beside the traffic log.
+
+## Create a workflow
+
+Press **New workflow** (the plus button). Three choices:
+
+| Choice | Result |
+| --- | --- |
+| **Repeat a send…** | The quick form: one send step, an interval and a repeat count. See [Injecting data](/docs/user/desktop/injecting#repeat-a-send). Disabled until the profile has at least one workflow. |
+| **Blank workflow** | Opens the editor with an empty workflow. |
+| **From last injection** | Opens the editor with your last injection as the first step. Disabled until you have injected something. |
+
+## Edit a workflow
+
+The editor has:
+
+- **Workflow name**.
+- **Repeat**: **Forever** or **Count** with a number of **Times**.
+- **Autostart**: "Run when the bridge starts". This sets `autostart = true`.
+- **Steps**: add **Send** or **Wait** steps. Each step card can be moved up or down, or deleted.
+  - A send step has a target, format and payload.
+  - A wait step has a duration.
+
+Press **Save**. The app validates the workflow first and shows the error if it is invalid, for example a workflow that loops forever with no wait.
+
+A running workflow is locked. The editor shows **Running, editing is locked** with a stop button. Stop it to edit it.
+
+## Run and stop
+
+Each row has a run button, which becomes a stop button while the workflow runs. A row shows progress through the current cycle. The run button is disabled with the tip **Start the bridge first** until the profile is running.
+
+The row menu (**More actions**) offers **Duplicate** and **Delete**.
+
+## Autostart
+
+Workflows with Autostart on start together with the profile, the same as with `rift run`.
+
+## From the CLI
+
+```sh
+rift workflow list
+rift workflow start "<profile>" heartbeat
+rift workflow stop "<profile>" heartbeat
+rift workflow status
+```
+
+`rift workflow status` lists the app as a running instance.

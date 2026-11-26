@@ -1,0 +1,25 @@
+---
+title: Updates
+description: How the desktop app checks for, downloads and installs updates, and what to do when an update fails.
+---
+
+The desktop app updates itself from the project's GitHub releases.
+
+## How it works
+
+1. About every 6 hours, and once when the app starts, the app checks for a newer release. Development builds do not check.
+2. If one exists, it downloads it in the background.
+3. When the download is ready, a pill in the app reads **Rift `<version>` · Restart to update**.
+4. Click the pill to install and relaunch.
+
+If bridges are running, the pill asks first. It says how many bridges are running and that restarting stops them. Choose **Later** to keep working or **Restart now** to install.
+
+While installing, the pill shows **Installing `<version>`…**.
+
+## If the update fails
+
+The pill changes to **Rift `<version>` · Download from releases**. Click it to open the [releases page](https://github.com/skylineagle/rift/releases/latest) and install the new version by hand. Hover the pill for the error message.
+
+## The bundled CLI
+
+The desktop app ships the `rift` CLI. Updating the app updates the CLI that it installed. If you run `rift update` from that CLI, it tells you to update the desktop app instead. See [Installation](/docs/user/installation#updating).

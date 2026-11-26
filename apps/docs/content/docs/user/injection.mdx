@@ -1,0 +1,101 @@
+---
+title: Injection
+description: Send bytes into a running bridge from stdin, from another terminal with rift inject, or from the desktop app. Payload formats and side switches.
+---
+
+Injection writes bytes out of a side of a running bridge, as if the other side had sent them. You can do it three ways:
+
+- Type commands on stdin of `rift run` or `rift pipe`.
+- Run `rift inject` from another terminal.
+- Use the inject bar in the [desktop app](/docs/user/desktop/injecting).
+
+## Payload formats
+
+| Format | Written as | Notes |
+| --- | --- | --- |
+| `text` | `hello\r\n` | Backslash escapes below. UTF-8 is sent as is. |
+| `hex` | `de ad be ef` | Bytes separated by spaces, commas or colons. `0x` prefixes are allowed. Also `deadbeef`. Needs an even number of digits. Case does not matter. |
+| `bin` | `01000001 01000010` | Groups of up to 8 binary digits, separated by spaces. `binary` also works. |
+| `file` | `./frame.bin` | The file's bytes are sent as is. |
+
+Text escapes:
+
+| Escape | Byte |
+| --- | --- |
+| `\r` | carriage return (0x0D) |
+| `\n` | line feed (0x0A) |
+| `\t` | tab (0x09) |
+| `\0` | NUL (0x00) |
+| `\\` | a backslash |
+| `\xNN` | the byte with hex value `NN` |
+
+Any other escape, and a trailing backslash, is an error. Text does not add a line ending: write `\r\n` yourself.
+
+These all send the same four bytes:
+
+```text
+hex de ad be ef
+hex DE:AD:BE:EF
+hex 0xde, 0xad, 0xbe, 0xef
+hex deadbeef
+```
+
+## Targets
+
+| Target | Writes to |
+| --- | --- |
+| `a` | Side A |
+| `b` | Side B |
+| `both` | Both sides |
+
+Target words are case-insensitive. Injecting to a side that cannot deliver (a TCP server with no client, a disabled side) reports the bytes as not delivered.
+
+## Stdin commands
+
+While `rift run` or `rift pipe` is running, each line you type is a command.
+
+```text
+[profile:]<a|b|both> <text|hex|bin|file> <payload>
+[profile:]<a|b> <on|off>
+```
+
+Examples:
+
+```text
+a hex de ad be ef
+gps:both text hello\r\n
+b file ./frame.bin
+b off
+gps:a on
+```
+
+- The `profile:` prefix picks the profile. You can leave it out when exactly one profile is running. With several profiles running, a line without a prefix prints `error: several profiles are running, prefix the command with <profile>:`.
+- `pipe` names its profile `adhoc` unless you pass `--name`.
+- `on` and `off` need a single side, `a` or `b`. `both on` is an error.
+- Empty lines are ignored. A bad command prints `error: ...` and the bridge keeps running.
+
+To feed stdin from a script, use a pipe or a FIFO:
+
+```sh
+mkfifo rift.in
+rift pipe tcp-server://127.0.0.1:9000 tcp://127.0.0.1:7000 --log json < rift.in > rift.log 2>&1 &
+exec 3> rift.in
+echo 'b hex 01 02 03' >&3
+```
+
+## `rift inject`
+
+`rift inject` sends to a Rift that is already running on the same machine, from any shell. It reaches `rift run`, `rift pipe` and the desktop app. See the [CLI reference](/docs/user/cli/inject) for every flag.
+
+```sh
+rift inject gps a text 'PING\r\n'
+rift inject gps both hex de ad be ef
+rift inject gps b file ./frame.bin
+rift inject gps a text PING --every 500ms
+rift inject gps a text PING --every 1.5s --count 10
+rift workflow stop gps cli-inject
+```
+
+## Switching a side on and off
+
+Use the stdin form `[profile:]<a|b> <on|off>`, or the side switch in the desktop app. A side that is off stays closed. Switching it on starts the endpoint (for example, the client connects).

@@ -1,0 +1,28 @@
+---
+title: rift ports
+description: List the serial ports Rift can see.
+---
+
+```sh
+rift ports
+```
+
+Prints one line per serial port: the name, the kind, and a description when there is one.
+
+```text
+/dev/ttyUSB0  usb  USB Serial
+```
+
+The kind is `usb`, `pci`, `bluetooth` or `unknown`. Use the name as the port in a `uart` endpoint:
+
+```sh
+rift pipe tcp-server://0.0.0.0:9000 "uart:///dev/ttyUSB0?baud=115200"
+```
+
+In a container, `rift ports` only lists devices you passed in with `--device`:
+
+```sh
+docker run --rm --device /dev/ttyUSB0 ghcr.io/skylineagle/rift ports
+```
+
+If a port you expect is missing, see [Troubleshooting](/docs/user/troubleshooting#serial-port-is-missing-or-permission-denied).

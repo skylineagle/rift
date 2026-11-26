@@ -1,0 +1,109 @@
+---
+title: Troubleshooting
+description: Fixes for common Rift problems, such as serial port permissions, Docker serial limits, unreachable servers and config errors.
+---
+
+## Serial port is missing or permission denied
+
+Run `rift ports` to see what Rift can see. If your device is not listed, the OS does not expose it as a serial port.
+
+On Linux, serial devices usually belong to the `dialout` group. Add your user to it and log in again:
+
+```sh
+sudo usermod -aG dialout "$USER"
+```
+
+The container image runs as a user in the `dialout` group. The device still has to be passed through with `--device`. See [Container](/docs/user/container).
+
+A serial port can be opened by one program at a time. If Rift shows `error: ...` for the port, close other programs that use it (terminal emulators, other Rift instances).
+
+## Serial passthrough does not work in Docker on macOS or Windows
+
+Docker Desktop on macOS and Windows cannot pass USB devices into a container. Serial passthrough needs a Linux host. On macOS and Windows, run the CLI or the desktop app directly on the host instead.
+
+## Other machines cannot reach my server
+
+A server bound to `127.0.0.1` accepts only local connections. Bind to `0.0.0.0` to listen on every interface:
+
+```sh
+rift pipe tcp-server://0.0.0.0:9000 "uart:///dev/ttyUSB0?baud=115200"
+```
+
+Also check your firewall. In a container, bind to `0.0.0.0` inside and publish the port (`-p 9000:9000`, or `-p 5000:5000/udp` for UDP).
+
+Binding to `0.0.0.0` makes the server reachable from your whole network, so use it on purpose.
+
+## Address already in use
+
+A server endpoint failed to bind. Another program, or another Rift, is using the port. The side shows `error: ...`. Pick another port or stop the other program. On macOS and Linux, `lsof -i :9000` shows who owns a port.
+
+## `unknown option` or `option needs a value`
+
+URI options are checked. A typo such as `?baud_rate=9600` fails. Serial URIs use `baud` and `flow`, while TOML uses `baud_rate` and `flow_control`. See [Endpoints](/docs/user/endpoints).
+
+Every option needs a value: `?enabled=false`, not `?enabled`.
+
+## `uart needs baud`
+
+A serial URI requires `baud`. For example `uart:///dev/ttyUSB0?baud=115200`.
+
+## The shell eats my `?` and `&`
+
+Quote URIs that contain `?` or `&`:
+
+```sh
+rift pipe tcp-server://0.0.0.0:9000 "uart:///dev/ttyUSB0?baud=9600&parity=even"
+```
+
+## `rift run` says `name at least one profile or pass --all`
+
+`rift run` needs a profile name or `--all`.
+
+```sh
+rift run gps
+rift run --all
+```
+
+## `profile ... not found` or the config file is missing
+
+`rift run` needs the config file to exist. Check which file Rift reads: `--config`, then `RIFT_CONFIG`, then `rift/rift.toml` in your OS config directory. `rift profile list` shows the profiles in it. In a container, the file must be `/config/rift.toml` unless you set `RIFT_CONFIG`.
+
+## Data is "not delivered"
+
+A data line ending with `[not delivered: ...]` means the target side could not take the bytes. Common reasons: a TCP server side with no connected clients, a disabled side, or a client that is still connecting. Check the status lines for that side.
+
+## `rift inject` or `rift workflow` cannot find anything
+
+They only reach a Rift that is running on the same machine. Start `rift run`, `rift pipe` or the desktop app first. `rift workflow status` shows what it can see. `rift inject` needs the profile to be running; for `rift pipe` use its `--name` (default `adhoc`).
+
+If `rift run` printed a warning that `rift inject` and `rift workflow` cannot reach the instance, the control channel failed to start. Restart it.
+
+## `request exceeds 64 KiB`
+
+A control request is capped at 64 KiB. Use the `file` format for large payloads. It sends only the path.
+
+## `several profiles are running, prefix the command with <profile>:`
+
+On stdin, prefix the command with the profile name when more than one profile runs: `gps:a hex de ad`.
+
+## A workflow is rejected
+
+- `a workflow looping forever needs a wait longer than 0 ms`: set `repeat`, or add a `wait` with `millis` above 0.
+- Workflow names cannot be empty and at least one step is required.
+- Bad payloads (such as an odd number of hex digits) are errors.
+
+## A text payload sends the wrong bytes
+
+Text uses backslash escapes. Use single quotes in your shell so `\r\n` reaches Rift unchanged. In TOML basic strings write `\\r\\n`. See [Injection](/docs/user/injection#payload-formats).
+
+## `rift update` does not update
+
+It only replaces the binary for release-archive installs. For `cargo install`, the desktop app and `.deb`/`.rpm` installs it prints the right step. If the folder is not writable, retry with `sudo`. See [rift update](/docs/user/cli/update).
+
+## `rift` is not found after installing the desktop app
+
+On macOS the app links the CLI on first launch into `/usr/local/bin`, or `~/.local/bin` if that fails. Launch the app once and open a new terminal. Add `~/.local/bin` to your PATH if needed. The Linux `.AppImage` does not install the CLI.
+
+## Import failed in the desktop app
+
+See [Config import](/docs/user/desktop/config-import) for the accepted file format and the 1 MiB limit.

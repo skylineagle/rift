@@ -1,0 +1,85 @@
+---
+title: Workflows
+description: Save timed sequences of send and wait steps with a profile, and start or stop them from the CLI, the desktop app or at startup.
+---
+
+A workflow is a named list of `send` and `wait` steps saved with a profile. Use one to send a heartbeat, replay a command sequence, or poll a device.
+
+## Define a workflow
+
+Workflows go in the config file under the profile they belong to:
+
+```toml
+[[profile]]
+name = "gps"
+a = { kind = "tcp-server", bind = "0.0.0.0:9000" }
+b = { kind = "uart", port = "/dev/ttyUSB0", baud_rate = 9600 }
+
+[[profile.workflows]]
+name = "heartbeat"
+autostart = true   # default false: start together with the profile
+repeat = 10        # omit to loop forever
+steps = [
+  { action = "send", target = "Both", format = "text", payload = "PING\\r\\n" },
+  { action = "wait", millis = 1000 },
+]
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `name` | required | Name used to start and stop it. |
+| `autostart` | `false` | Start with the profile (`rift run`, or when you start the bridge in the app). |
+| `repeat` | forever | How many times to run all the steps. |
+| `steps` | required | At least one step. |
+
+### Steps
+
+```toml
+{ action = "send", target = "Both", format = "text", payload = "PING\\r\\n" }
+{ action = "wait", millis = 1000 }
+```
+
+- `send` writes a payload to `target` (`A`, `B` or `Both`). `format` is `text`, `hex`, `binary` or `file`. The payload is parsed with the same rules as [injection](/docs/user/injection#payload-formats).
+- `wait` pauses for `millis` milliseconds.
+
+### Rules
+
+- A workflow needs a name that is not empty and at least one step.
+- A workflow with no `repeat` loops forever, so it needs a `wait` longer than 0 ms. Rift rejects it otherwise.
+- Payloads are checked when the workflow is validated, so a bad hex string is an error before anything is sent.
+- In a TOML basic string, write `\\r\\n` to get the escapes `\r\n`.
+
+## Run workflows from the CLI
+
+A workflow runs inside a Rift that is already running the profile.
+
+```sh
+rift workflow list [-c file]          # workflows saved in the config
+rift workflow start gps heartbeat
+rift workflow stop gps heartbeat
+rift workflow status                  # running instances, their profiles and workflows
+```
+
+`rift workflow list` prints one line per workflow:
+
+```text
+gps  heartbeat  autostart=true  repeat=10  steps=2
+```
+
+`repeat=forever` is shown when `repeat` is not set. `rift workflow status` prints each running Rift (`cli` or the desktop app) with its pid, its profiles and its running workflows. See the [CLI reference](/docs/user/cli/workflow).
+
+## Repeating injections are workflows
+
+`rift inject ... --every 500ms` starts a workflow named `cli-inject` that sends the payload and then waits. `--count` becomes `repeat`. Only one runs at a time per profile. Stop it with:
+
+```sh
+rift workflow stop gps cli-inject
+```
+
+## Events
+
+A running workflow reports `started`, a `step` event for each step (with the cycle number), and `finished`, `stopped` or `failed: <message>`. `--quiet` hides the per-step events. With logging on, `workflow.started`, `workflow.finished`, `workflow.stopped` and `workflow.failed` are logged.
+
+## In the desktop app
+
+You can create, edit, run and stop workflows in the app. See [Desktop workflows](/docs/user/desktop/workflows).

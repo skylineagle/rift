@@ -1,0 +1,173 @@
+---
+title: CLI
+description: Structure of crates/rift-cli, argument parsing, the run and pipe host, stdin commands, remote control commands, output rendering and self-update.
+---
+
+`crates/rift-cli` builds the `rift` binary (`[[bin]] name = "rift"`). It is a host for `rift-core`: it parses arguments, builds a `Host`, prints events and waits for a signal.
+
+## File map
+
+| File | Job |
+| --- | --- |
+| `main.rs` | Entry point. Parses `Cli` and dispatches to a command. |
+| `arguments.rs` | clap types: `Cli`, `Command`, and the argument structs. |
+| `commands.rs` | `run`, `pipe`, `profile`, `ports`, and the shared `serve` function. |
+| `host_setup.rs` | `Host`: builds `Rift`, the logger watcher, workflows and the control server. |
+| `logging_setup.rs` | Reads the `[logging]` section and builds the `Logger` with default file `rift-cli.log`. |
+| `printer.rs`, `render.rs` | Event printing and the three text formats. |
+| `stdin_commands.rs`, `inject_command.rs` | Line commands read from stdin while a pipe runs. |
+| `inject_cli.rs` | `rift inject`. |
+| `workflow_command.rs` | `rift workflow list, start, stop, status`. |
+| `shutdown.rs` | Waits for Ctrl-C, and SIGTERM on Unix. |
+| `config_path.rs` | Calls `rift_core::resolve_config_path`. |
+| `duration.rs` | Parses `--every` values such as `200ms` or `1s`. |
+| `update_command.rs`, `release.rs`, `install_source.rs`, `update_cache.rs`, `update_notice.rs` | Self-update and update notices. |
+| `build.rs` | Exposes the Cargo `TARGET` as `RIFT_TARGET` for the updater. |
+
+## Entry point
+
+```rust
+#[tokio::main]
+async fn main() -> Result<()> {
+    match Cli::parse().command {
+        Command::Run(arguments) => { update_notice::announce_updates(); commands::run(arguments).await }
+        Command::Pipe(arguments) => { update_notice::announce_updates(); commands::pipe(arguments).await }
+        Command::Update { check } => update_command::update(check).await,
+        Command::Inject(arguments) => inject_cli::inject(arguments),
+        Command::Workflow { action } => workflow_command::workflow(action),
+        Command::Profile { action } => commands::profile(action),
+        Command::Ports => commands::ports(),
+    }
+}
+```
+
+Only `run` and `pipe` are long-lived and async. `inject`, `workflow`, `profile` and `ports` are short synchronous calls.
+
+## Arguments
+
+`arguments.rs` uses clap derive. Shared groups are flattened into commands:
+
+- `ConfigArguments`: `-c` or `--config`, also read from `RIFT_CONFIG`.
+- `OutputArguments`: `--log` with `text`, `hex` or `json` (default `hex`), and `--quiet`.
+
+| Command | Shape |
+| --- | --- |
+| `run` | `names...` or `--all`, config, output |
+| `pipe` | `a`, `b` URIs, `--name` (default `adhoc`), config, output |
+| `inject` | `profile`, target, format, `payload...`, optional `--every` and `--count` |
+| `workflow` | `list`, `start PROFILE NAME`, `stop PROFILE NAME`, `status` |
+| `profile` | `list`, `add NAME A B`, `remove NAME` |
+| `ports` | none |
+| `update` | `--check` |
+
+`inject` takes `Target` and `PayloadFormat` directly as clap value types, since both implement `FromStr`. `--count` requires `--every` and must be at least 1.
+
+## Running profiles: `serve`
+
+`run` and `pipe` end in the same function, `serve` in `commands.rs`:
+
+```rust
+let mut host = Host::new(logging);
+let events = if output.quiet { host.rift.subscribe_lifecycle() } else { host.rift.subscribe() };
+let printer = tokio::spawn(print_events(events, output));
+host.start_profiles(&profiles)?;
+host.accept_remote_commands(profiles);
+tokio::spawn(read_commands(host.rift.clone()));
+wait_for_shutdown().await;
+host.shutdown().await;
+printer.abort();
+```
+
+`--quiet` switches the subscription from all events to lifecycle events. That is how the container image avoids logging traffic by default.
+
+`run` loads the store, selects profiles (`names` or `--all`) and reads `[logging]` from the same file. `pipe` builds one `Profile` from the two URIs and reads logging config from the config path only if that file exists.
+
+### Host
+
+`host_setup.rs`:
+
+```rust
+pub struct Host {
+    pub rift: Arc<Rift>,
+    workflows: Arc<Workflows>,
+    control: Option<ControlServer>,
+}
+```
+
+- `Host::new` creates `Rift::with_logger(...)` and spawns `Logger::watch`.
+- `start_profiles` starts each profile and then its autostart workflows. Autostart errors print to stderr and do not stop the run.
+- `accept_remote_commands` starts the `ControlServer` with kind `"cli"`. If that fails the CLI prints a warning and carries on, because pipes work without it.
+- `shutdown` stops workflows, calls `stop_all`, waits 200 ms for logs to drain, flushes the logger and drops the control server (which removes the host file).
+
+## Stdin commands
+
+While a pipe runs, `read_commands` reads lines from stdin. It lets scripts and humans inject without a second process. Grammar, from `inject_command.rs`:
+
+```text
+[profile:]<a|b|both> <text|hex|bin|file> <payload>
+[profile:]<a|b> <on|off>
+```
+
+`parse` splits the first word into an optional `profile:` prefix and a `Target`. The second word is either `on` or `off`, which makes a `SideSwitchCommand`, or a payload format, which makes an `InjectCommand`. `on` and `off` need a single side.
+
+With no profile prefix, `only_running_profile` picks the only running profile and errors when several are running. Execution calls `rift.inject(...)` or `rift.set_side_enabled(...)`. Errors print as `error: ...` and the loop continues.
+
+## Remote commands
+
+`inject` and `workflow` use `rift_core::control::send`. They talk to a running instance, as described in [Control socket](/docs/developer/core/control-socket).
+
+`rift inject PROFILE TARGET FORMAT PAYLOAD...` joins the payload words with spaces. For a one-shot send it issues `ControlRequest::Inject`. With `--every`, it builds an inline workflow and issues `StartWorkflow`:
+
+```rust
+Workflow {
+    name: "cli-inject".to_string(),
+    autostart: false,
+    repeat: count,
+    steps: vec![
+        WorkflowStep::Send { target, format, payload },
+        WorkflowStep::Wait { millis },
+    ],
+}
+```
+
+So repeated injection reuses the workflow engine instead of adding a second scheduler. Stop it with `rift workflow stop PROFILE cli-inject`. File payload paths are canonicalized first. See [Payloads](/docs/developer/core/payloads).
+
+`rift workflow list` reads the config file locally. `start`, `stop` and `status` go through the control socket. `status` calls `status_all` and prints each host's kind, pid, profiles and workflows.
+
+## Rendering
+
+`render.rs` turns an `Event` into one line or nothing. It takes the `LogFormat` and the quiet flag.
+
+- `json`: the event serialized as JSON, one object per line.
+- `text`: `HH:MM:SS.mmm profile direction NB "escaped ascii"`.
+- `hex`: the same prefix with a hex dump line.
+
+Direction is `A received`, `A→B` or `inject→B`. An undelivered chunk gets a suffix: `[dropped]`, or `[not delivered: Side B is paused]` when a reason is known. With `quiet`, `Data` events and workflow `Step` events are hidden (`is_noisy`).
+
+`print_events` loops over a broadcast receiver and skips `Lagged` errors, since a CLI that falls behind should keep printing.
+
+## Updates
+
+`rift update` and the startup notice are in five files.
+
+`release.rs` calls the GitHub API for the latest release of `skylineagle/rift` and downloads assets, with a 128 MiB cap.
+
+`install_source.rs` detects how the binary got there, from its resolved path:
+
+| Source | Detected by | `rift update` does |
+| --- | --- | --- |
+| `Archive` | default | Downloads and replaces the binary. |
+| `Cargo` | path contains `/.cargo/bin/` | Prints `cargo install rift-cli --force`. |
+| `DesktopApp` | inside `.app/Contents/`, or an `uninstall.exe` beside the binary | Tells the user to update the app. |
+| `SystemPackage` | starts with `/usr/bin/` | Points at the release page. |
+
+For `Archive` installs, `update_command.rs`:
+
+1. Finds the asset `rift-<tag>-<RIFT_TARGET>.tar.gz` (`.zip` on Windows) and its `.sha256` file.
+2. Downloads both and compares the SHA-256 digest. A mismatch aborts.
+3. Extracts the `rift` or `rift.exe` entry in memory.
+4. Stages it in the same directory as the running binary and calls `self_replace::self_replace`.
+
+`RIFT_TARGET` comes from `build.rs`. It matches the target triple used in release archive names (see [Building and release](/docs/developer/building-and-release)). `rift update --check` only reports.
+
+`update_notice.rs` prints a hint on `run` and `pipe` when a newer version is known. It only runs when stderr is a terminal and `RIFT_NO_UPDATE_CHECK` is unset. It reads a cache (`update_cache.rs`, `update-check.json` in the OS cache directory) and refreshes it on a background thread when the cache is older than 24 hours. The benchmark workflow sets `RIFT_NO_UPDATE_CHECK=1` so measurements do not include network calls.

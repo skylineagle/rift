@@ -1,0 +1,59 @@
+---
+title: rift run
+description: Run saved profiles from the config file.
+---
+
+```sh
+rift run [OPTIONS] [NAMES]...
+```
+
+`rift run` starts profiles from the config file and keeps them running until Ctrl+C or SIGTERM. Workflows with `autostart = true` start together with their profile.
+
+| Argument or flag | Default | Meaning |
+| --- | --- | --- |
+| `[NAMES]...` | none | One or more profile names. |
+| `--all` | off | Run every profile in the config. |
+| `--log <text\|hex\|json>` | `hex` | How traffic is printed. |
+| `--quiet` | off | Hide data and per-step workflow events. |
+| `-c, --config <PATH>` | see below | Config file. |
+
+The config path is `--config`, then `RIFT_CONFIG`, then `rift/rift.toml` in the OS config directory.
+
+Without names and without `--all`, `rift run` fails with `name at least one profile or pass --all`. An unknown name fails with `profile <name> not found`. If a profile has `enabled = false` on a side, that side starts closed.
+
+## Examples
+
+```sh
+rift run gps
+rift run gps relay
+rift run --all
+rift run -c examples/rift.toml gps
+rift run -c examples/combos/sensor-gateway.toml --all
+RIFT_CONFIG=./rift.toml rift run --all
+
+# JSON lines into jq
+rift run --all --log json | jq .
+
+# Connection status only
+rift run --all --quiet
+```
+
+## While it runs
+
+With one profile running, stdin commands do not need a profile prefix. With several, prefix the command with `<profile>:`.
+
+```text
+gps:a hex de ad be ef
+backup:a on
+uplink:b off
+```
+
+You can also use [`rift inject`](/docs/user/cli/inject) and [`rift workflow`](/docs/user/cli/workflow) from another terminal.
+
+## Logging
+
+`rift run` reads the `[logging]` section from the same config file. See [Logging](/docs/user/logging).
+
+## Update notice
+
+`rift run` prints a one-line stderr notice when a newer release exists. Set `RIFT_NO_UPDATE_CHECK=1` to hide it.

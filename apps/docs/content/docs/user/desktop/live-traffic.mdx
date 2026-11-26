@@ -1,0 +1,34 @@
+---
+title: Live traffic
+description: Read, filter, pause, export and clear the traffic log in the desktop app.
+---
+
+![Traffic log with received, forwarded and injected data](/screenshots/desktop-traffic-log.png)
+
+The traffic log shows what happens in the selected profile: data received on each side, data forwarded across the bridge, data you injected, and status changes. Each data row carries a direction, so you can tell a forward from an injection.
+
+When a side cannot take data, the row says why, for example `Not delivered: Side A is listening but has no connected clients`.
+
+## View
+
+| Control | What it does |
+| --- | --- |
+| Payload view | Switch between **Text view** (ASCII) and **Hex view**. |
+| Direction | **All data**, **Received at A only**, **Received at B only**, **A → B only**, **B → A only**. |
+| Filter | Type to filter rows. |
+| Pause stream / Resume stream | Stop the log from scrolling so you can read it. New events are not lost while paused. |
+| Scroll to bottom | Jump to the latest rows. |
+
+## More log actions
+
+Open the menu with **More log actions**.
+
+- **Injected only**: show only the rows you injected.
+- **Export log…**: save the rows you see to a text file. The suggested name is `rift-<profile>.log`.
+- **Clear log**: remove all rows for the profile.
+
+## Limits
+
+The log keeps at most 10,000 rows and at most 32 MiB of payload data per profile. Older rows are dropped first.
+
+The log is the live view. For files, console or HTTP output that survive a restart, use [Logging settings](/docs/user/desktop/logging-settings). Structured logs do not include payload bytes.

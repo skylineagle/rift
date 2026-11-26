@@ -1,0 +1,152 @@
+---
+title: Workflows
+description: The workflow model, validation, the runner's registry and task, autostart gating and cancellation guarantees.
+---
+
+A workflow is a named script that belongs to a profile. It sends payloads and waits, once or in a loop.
+
+## The model
+
+`workflow.rs`:
+
+```rust
+pub struct Workflow {
+    pub name: String,
+    #[serde(default)]
+    pub autostart: bool,
+    pub repeat: Option<u32>,
+    pub steps: Vec<WorkflowStep>,
+}
+
+#[serde(tag = "action", rename_all = "kebab-case")]
+pub enum WorkflowStep {
+    Send { target: Target, format: PayloadFormat, payload: String },
+    Wait { millis: u64 },
+}
+```
+
+In TOML:
+
+```toml
+[[profile.workflows]]
+name = "heartbeat"
+autostart = true
+repeat = 10
+steps = [
+  { action = "send", target = "Both", format = "text", payload = "PING\\r\\n" },
+  { action = "wait", millis = 1000 },
+]
+```
+
+`repeat` omitted means loop forever.
+
+## Validation and preparation
+
+`Workflow::prepare()` validates and converts steps to `PreparedStep`, parsing every payload up front:
+
+```rust
+pub(crate) enum PreparedStep {
+    Send { target: Target, bytes: Bytes },
+    Wait(Duration),
+}
+```
+
+Rules:
+
+1. The name cannot be empty.
+2. There must be at least one step.
+3. A workflow with no `repeat` needs a `Wait` longer than 0 ms. Otherwise it would spin forever with no pause.
+4. Each `Send` payload must parse (see [Payloads](/docs/developer/core/payloads)).
+
+`validate()` is the public wrapper. The desktop exposes it as the `validate_workflow` command so the editor can reject bad workflows before saving. Parsing at start time means a run never fails halfway through on a bad payload.
+
+## The runner
+
+`workflow_runner.rs` defines `Workflows`, which sits next to a `Rift`:
+
+```rust
+pub struct Workflows {
+    rift: Arc<Rift>,
+    registry: Registry,        // Arc<Mutex<HashMap<WorkflowKey, RunningWorkflow>>>
+    next_id: AtomicU64,
+}
+```
+
+A workflow is identified by `(profile, workflow name)`. Only one instance of a key runs at a time. `RunningWorkflow` holds an `id`, a `CancellationToken`, and the current `cycle` and `step`.
+
+| Method | Behaviour |
+| --- | --- |
+| `start(profile, workflow)` | Launch now. Fails with `WorkflowRunning` if the key is already active. |
+| `stop(profile, name)` | Remove from the registry, cancel, publish `Stopped`. `WorkflowNotRunning` if absent. |
+| `stop_profile(profile)` | Stop every workflow of a profile. |
+| `start_autostart(&profile)` | Launch each workflow with `autostart = true`, but wait for sides to connect. Returns the errors. |
+| `running()` | Sorted `Vec<WorkflowStatus>` with `profile`, `workflow`, `cycle`, `step`. |
+
+### Launch
+
+`launch` does the work for `start` and `start_autostart`:
+
+1. `workflow.prepare()` to get steps.
+2. `rift.lifetime_bound_token(profile)` for a child cancellation token. Fails with `NotRunning` if the profile is not running.
+3. Take a fresh `id` and insert the registry entry. Publish `Workflow(Started)`.
+4. Log `workflow.started`.
+5. `tokio::spawn` the run task.
+
+The run task ends with `conclude`, which removes the entry and publishes the final state only if the entry still has the same `id`. A task from an old run cannot clobber the state of a newer run of the same workflow.
+
+### Autostart gating
+
+Autostart workflows start together with the profile, but the sides may not be connected yet. With `await_sides = true`, the task first calls `wait_for_sides`. It checks which sides the steps target, then waits on the lifecycle event channel until each is connected (peers above zero or `Connected` state). It returns false, and the run ends as `Stopped`, if cancelled or if the profile disappears. Manual `start` does not wait. The integration test `autostarted_workflow_waits_for_its_target_side_to_connect` in `tests/bridge.rs` covers this.
+
+### The step loop
+
+```rust
+while repeat.is_none_or(|cycles| completed_cycles < cycles) {
+    for (index, step) in steps.iter().enumerate() {
+        if cancellation.is_cancelled() { return Outcome::Stopped; }
+        on_step(completed_cycles.saturating_add(1), index);
+        match step {
+            PreparedStep::Send { target, bytes } => match inject(*target, bytes.clone()) {
+                Ok(()) => {}
+                Err(Error::NotRunning(_)) => return Outcome::Stopped,
+                Err(error) => return Outcome::Failed(error),
+            },
+            PreparedStep::Wait(duration) => { /* select on cancel or sleep */ }
+        }
+    }
+    completed_cycles = completed_cycles.saturating_add(1);
+    tokio::task::yield_now().await;
+}
+Outcome::Finished
+```
+
+`run_steps` takes `on_step` and `inject` as closures, so the loop is testable without a `Rift`. The `yield_now` keeps a zero-wait loop from starving other tasks.
+
+`on_step` publishes `Workflow(Step { cycle, step })`. Cycles count from 1 and steps from 0.
+
+### The stop guarantee
+
+When `stop()` returns, no further send will happen. The send closure holds the registry lock while it injects:
+
+```rust
+fn send(rift: &Rift, registry: &Registry, profile: &str, cancellation: &CancellationToken, target: Target, bytes: Bytes) -> Result<()> {
+    let _stop_blocked = registry.lock().unwrap();
+    rift.inject_unless_cancelled(profile, cancellation, target, bytes)
+}
+```
+
+`stop()` needs the same lock to remove the entry and cancel. So a send either finishes before the stop, or sees the cancelled token and is refused. `inject_unless_cancelled` re-checks the token under the bridges lock.
+
+## Events and logs
+
+Workflow events go through `Rift::publish`, so subscribers to `subscribe()` and `subscribe_lifecycle()` both get them. They are `Started`, `Step`, `Finished`, `Stopped` and `Failed`. The runner logs `workflow.started`, `workflow.finished`, `workflow.stopped` and `workflow.failed` directly. The logger watcher does not turn workflow events into records, which avoids duplicates.
+
+## Who starts workflows
+
+| Starter | Path |
+| --- | --- |
+| Profile start (CLI) | `Host::start_profiles` calls `start_autostart`. |
+| Profile start (desktop) | `profile_lifecycle::start` calls `start_autostart`. |
+| `rift workflow start` | Control socket `StartWorkflow` with a name reference. |
+| `rift inject --every` | Control socket `StartWorkflow` with an inline workflow named `cli-inject`. |
+| Desktop run button | `start_workflow` command, looks the workflow up in the store. |

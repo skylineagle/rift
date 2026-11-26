@@ -1,0 +1,99 @@
+---
+title: Logging
+description: Structured logs to the console, rotating files or an HTTP endpoint, and the difference from the traffic output printed by run and pipe.
+---
+
+Rift has two separate outputs.
+
+| Output | What it shows | How to control it |
+| --- | --- | --- |
+| Traffic output (stdout) | Every data, status, dropped and workflow event as it happens | `--log text\|hex\|json` and `--quiet` on `rift run` and `rift pipe` |
+| Structured logs | Profile, connection, drop and workflow events plus periodic traffic statistics, sent to sinks | The `[logging]` section of the config file, or the desktop logging settings |
+
+## Traffic output
+
+`rift run` and `rift pipe` print events to stdout, one per line.
+
+| `--log` value | Data lines show |
+| --- | --- |
+| `hex` (default) | A hex dump of the bytes |
+| `text` | The byte count and the text with escapes, such as `5B "hello"` |
+| `json` | One JSON object per event, for `jq` or a log collector |
+
+Status, dropped and workflow lines print in the same way for `hex` and `text`. `json` prints every event as JSON.
+
+`--quiet` hides data events and per-step workflow events. Status, dropped and workflow start and end events still print.
+
+```sh
+rift run --all --log json | jq .
+rift run --all --log text --quiet
+```
+
+A text line looks like this:
+
+```text
+14:03:22.481 gps A→B 5B "hello"
+14:03:22.482 gps B received 2B "ok"
+14:03:22.490 gps inject→A 4B "PING"
+14:03:23.100 gps A connected 192.168.1.5:50122
+```
+
+A data event is marked `A→B` or `B→A` when forwarded, `A received` when a side received bytes, and `inject→A` when you injected them. If the target could not take the data, the line ends with a note such as `[not delivered: Side A is listening but has no connected clients]` or `[dropped]`.
+
+## Structured logs
+
+Structured logging is configured in the `[logging]` section of the config file. All sinks are off by default, so nothing is written until you enable one.
+
+```toml
+[logging]
+level = "info"
+
+[logging.file]
+enabled = true
+directory = "/var/log/rift"
+```
+
+`rift run`, `rift pipe` and `rift profile add|remove` use it. `rift pipe` reads it from the resolved config path (or `-c`) if that file exists. Every key is listed in [Configuration](/docs/user/configuration#logging).
+
+### Sinks
+
+| Sink | Writes to | Notes |
+| --- | --- | --- |
+| `console` | stderr | Format `text` or `json`. |
+| `file` | A rotating log file | Rotates by `size`, `hourly` or `daily`. Keeps `max_files` and can cap the total size. Default file name is `rift-cli.log` for the CLI and `rift-desktop.log` for the desktop app. |
+| `http` | A URL | Batches records and sends them as NDJSON or a JSON array. Add headers for authentication. |
+
+### Levels
+
+`level` is the minimum level written: `debug`, `info`, `warn` or `error`. The default is `info`.
+
+### Events
+
+| Event | Level | When |
+| --- | --- | --- |
+| `profile.started`, `profile.stopped` | info | A bridge starts or stops |
+| `profile.added`, `profile.removed` | info | `rift profile add` or `remove` |
+| `side.enabled`, `side.disabled` | info | A side is switched on or off |
+| `side.connected`, `side.disconnected` | info | A peer attaches or leaves |
+| `side.listening`, `side.connecting` | debug | A server starts listening or a client is connecting |
+| `side.error` | error | A connection error |
+| `data.dropped` | warn | Chunks were dropped because a consumer fell behind |
+| `data.injected` | debug | Bytes were injected, and whether they were delivered |
+| `workflow.started`, `workflow.finished`, `workflow.stopped`, `workflow.failed` | info | Workflow lifecycle |
+| `stats.profile` | info | Periodic traffic statistics for a running profile |
+
+`stats_interval_secs` sets how often statistics are written. Set it to `0` to turn them off.
+
+Payload bytes are not written to structured logs. Use the traffic output for that.
+
+### Record format
+
+Each record is a JSON object with `@timestamp` (RFC 3339, UTC), `level`, `event`, `message` and `service` (always `rift`). Records for a bridge also carry `profile` and `side`. Some add fields such as `peer` or `chunks`.
+
+### Overload
+
+If a sink cannot keep up, Rift drops records instead of blocking the bridge and writes a `logging.dropped` record when it recovers.
+
+## Desktop app
+
+The app edits the same `[logging]` section. See [Logging settings](/docs/user/desktop/logging-settings).

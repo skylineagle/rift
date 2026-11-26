@@ -1,0 +1,170 @@
+---
+title: Control socket
+description: How rift inject and rift workflow reach a running instance, the protocol, host discovery, the 64 KiB cap and the security model.
+---
+
+`rift inject` and `rift workflow` are separate processes. They do not own any bridge. They find a running Rift instance (a CLI `rift run` or the desktop app) and ask it to act. That mechanism is in `crates/rift-core/src/control/`.
+
+```text
+control/
+  mod.rs        re-exports: send, status_all, ControlServer, ProfileLookup, protocol types
+  protocol.rs   ControlRequest, ControlResponse, HostStatus, Envelope, size limits
+  server.rs     ControlServer, accept loop, per-connection handling
+  server/dispatch.rs   request to action
+  client.rs     send, status_all
+  hosts.rs      host records on disk, token generation
+  tests.rs      end-to-end and limit tests
+```
+
+## Overview
+
+```text
+ rift inject gps both text hi            Rift instance (CLI or desktop)
+ ----------------------------            -------------------------------
+ read hosts dir                           ControlServer on 127.0.0.1:PORT
+ for each host record:                      token = 64 hex chars
+   connect 127.0.0.1:PORT   ------------>   read one line (max 64 KiB)
+   write {"token","request"}\n              check token, then parse
+   read one line            <------------   dispatch -> Rift / Workflows
+   {"ok":true}\n                            write one line, close
+```
+
+## Host registration
+
+When a `ControlServer` starts (`server.rs`), it:
+
+1. Binds a std `TcpListener` to `127.0.0.1:0` (a random free port), sets it non-blocking and converts it to a tokio listener.
+2. Generates a token: 32 random bytes from `getrandom`, hex-encoded to 64 characters.
+3. Writes a host record, `<pid>.json`, to the hosts directory with `pid`, `port`, `token` and `kind`.
+4. Spawns the accept loop.
+
+```rust
+pub(super) struct HostRecord { pub pid: u32, pub port: u16, pub token: String, pub kind: String }
+```
+
+The hosts directory is `RIFT_HOSTS_DIR` if set, otherwise `<OS local data dir>/rift/hosts`. `register` writes through a temp file in the same directory and `persist`s it, so a reader never sees a half-written file. On Unix the file mode is `0600`. The token is the only credential, so only the owning user can read it.
+
+`kind` is `"cli"` or `"desktop"`. It is only for display in `rift workflow status`.
+
+Dropping the `ControlServer` cancels the accept loop and removes the host file. If a process dies without dropping it, the file is left behind. The client cleans those up, as described below.
+
+## Protocol
+
+One request and one response per TCP connection. Each is one line of JSON ending in `\n`. The connection closes after the response.
+
+### Request
+
+```json
+{"token":"…64 hex chars…","request":{"type":"inject","profile":"gps","target":"Both","format":"text","payload":"hi"}}
+```
+
+`ControlRequest` is tagged with `type`, kebab-case:
+
+| `type` | Fields | Effect |
+| --- | --- | --- |
+| `inject` | `profile`, `target`, `format`, `payload` | Parse payload, inject into the profile. |
+| `start-workflow` | `profile`, `workflow` | `workflow` is `{"name": "..."}` or `{"inline": {...}}`. |
+| `stop-workflow` | `profile`, `workflow` | Stop by name. |
+| `status` | none | Returns a `HostStatus`. |
+
+`target` uses the `Target` names exactly: `A`, `B`, `Both`. `format` uses lowercase `PayloadFormat` names.
+
+### Response
+
+```rust
+pub struct ControlResponse {
+    pub ok: bool,
+    pub data: Option<Value>,
+    pub error: Option<String>,
+    pub not_running: Option<bool>,
+}
+```
+
+Absent members are omitted from the JSON. `not_running` is set when the profile or workflow was not running on that instance. The client uses it to decide whether to try the next host. `Status` returns `HostStatus { kind, pid, profiles, workflows }` in `data`.
+
+## Limits and safety
+
+| Limit | Value | Where |
+| --- | --- | --- |
+| Request size | 64 KiB (`MAX_REQUEST_BYTES`) | `protocol.rs` |
+| Response size the client reads | 1 MiB (`MAX_RESPONSE_BYTES`) | `protocol.rs` |
+| Concurrent connections | 16 (`MAX_CONNECTIONS`, a `Semaphore`) | `server.rs` |
+| Time to receive the request line | 2 s (`REQUEST_TIMEOUT`) | `server.rs` |
+| Time to write the response | 5 s (`RESPONSE_TIMEOUT`) | `server.rs` |
+| Client connect timeout | 2 s | `client.rs` |
+| Client read and write timeout | 5 s | `client.rs` |
+| Bind address | `127.0.0.1` only | `server.rs`, `client.rs` |
+
+The server reads with `stream.take(MAX_REQUEST_BYTES + 1)` and `read_until(b'\n')`. If the line is longer than the cap, it answers `request exceeds 64 KiB` and does not parse it. The client also refuses to send an encoded request of 64 KiB or more.
+
+When all 16 slots are taken, the server drops new connections without reading them. A flood of idle connections cannot hold more than 16 tasks, and each one is cut off after 2 seconds.
+
+Token checking is a two-step parse:
+
+```rust
+match serde_json::from_slice::<Credentials>(line) {
+    Ok(credentials) if credentials.token != context.token => {
+        return ControlResponse::rejection(INVALID_TOKEN.to_string(), true)
+    }
+    Ok(_) => {}
+    Err(error) => return invalid_request(error),
+}
+let envelope: Envelope = /* full parse */;
+```
+
+`Credentials` only has a `token` field, so the server learns whether the caller is authorized before it interprets the request. A caller without the token gets no information about the request schema.
+
+## Client
+
+`client.rs` exposes two functions:
+
+- `send(request) -> Result<ControlResponse>` for inject and workflow control.
+- `status_all() -> Result<Vec<HostStatus>>` for `rift workflow status`.
+
+`send` walks every host record, sorted by path, and tries each in turn:
+
+| Outcome from one host | What the client does |
+| --- | --- |
+| `ok` response | Return it. Done. |
+| Token rejected | Skip. The record is stale: a new process reused the port. |
+| `not_running` response | Remember that a host was reached and try the next one. |
+| Other error response | Return that error. |
+| Connection refused | Delete the stale host file and continue. |
+| Other transport error | Remember it and continue. |
+
+If no host accepts, the error depends on what happened. If a host was reached but did not run the profile, the message is "profile `x` is not running in any Rift instance". If no host answered at all, it is "no running Rift instance found". Several instances can run at once, and the client finds the one that has the profile.
+
+## Dispatch
+
+`server/dispatch.rs` turns a request into action:
+
+```rust
+match request {
+    ControlRequest::Inject { profile, target, format, payload } =>
+        inject(context, &profile, target, format, &payload).map(|()| None),
+    ControlRequest::StartWorkflow { profile, workflow } => start_workflow(context, &profile, workflow).map(|()| None),
+    ControlRequest::StopWorkflow { profile, workflow } => context.workflows.stop(&profile, &workflow).map(|()| None),
+    ControlRequest::Status => status(context).map(Some),
+}
+```
+
+- `inject` checks the profile is running, parses the payload, calls `Rift::inject`, and writes a `control.inject` log record.
+- `start_workflow` resolves a `Name` through the `ProfileLookup` and passes an `Inline` workflow straight to `Workflows::start`.
+- Errors become `ControlResponse::failure(&error)`, which sets `not_running` for `NotRunning` and `WorkflowNotRunning`.
+
+### ProfileLookup
+
+```rust
+pub type ProfileLookup = Arc<dyn Fn(&str) -> Option<Profile> + Send + Sync>;
+```
+
+Named workflows live in profiles, and the server does not own the store. The host passes a lookup closure. The CLI passes a snapshot of the profiles it started with (`host_setup.rs`). The desktop passes a closure over its live `ProfileStore`, so workflows edited in the UI are visible to `rift workflow start` without a restart.
+
+## Embedding checklist
+
+To add the control socket to a new host:
+
+1. Hold `Arc<Rift>` and `Arc<Workflows>`.
+2. Call `ControlServer::start(kind, rift, workflows, lookup)` inside a tokio runtime, because it spawns the accept loop.
+3. Keep the returned value alive. Drop it on shutdown so the host file is removed.
+4. Treat a start failure as non-fatal. Both existing hosts only warn or log `control.failed`.

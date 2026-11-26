@@ -1,0 +1,200 @@
+---
+title: Endpoints
+description: The Endpoint enum, the Link and Context types, the shared stream pump, reconnect and backoff, and each endpoint kind.
+---
+
+An endpoint is one side's connection to the outside world. All of them live in `crates/rift-core/src/endpoint/`.
+
+```text
+endpoint/
+  mod.rs              Endpoint enum and endpoint::run dispatch
+  link.rs             Link, Context, WriteRequest, PeerWrites, WriteSource
+  stream.rs           pump: copy bytes between a stream and the link
+  client_session.rs   run_client: connect, pump, backoff, repeat
+  backoff.rs          Backoff
+  tcp_client.rs  tcp_server.rs  udp_client.rs  udp_server.rs  uart.rs
+```
+
+## The Endpoint enum
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum Endpoint {
+    TcpClient(TcpClientConfig),
+    TcpServer(TcpServerConfig),
+    UdpClient(UdpClientConfig),
+    UdpServer(UdpServerConfig),
+    Uart(UartConfig),
+}
+
+pub(crate) async fn run(endpoint: Endpoint, link: Link) {
+    match endpoint {
+        Endpoint::TcpClient(config) => tcp_client::run(config, link).await,
+        // one arm per kind
+    }
+}
+```
+
+The enum is the TOML shape (`kind = "tcp-client"` and so on). It is also what the URI parser produces. `endpoint::run` is the only place that dispatches on the kind at runtime.
+
+## The Link contract
+
+An endpoint task receives a `Link`. It is the whole interface between an endpoint and the rest of Rift:
+
+```rust
+pub(crate) struct Link {
+    pub writes: mpsc::Receiver<WriteRequest>,
+    pub context: Context,
+}
+
+pub(crate) struct Context {
+    pub reads: mpsc::Sender<Bytes>,
+    pub states: mpsc::Sender<ConnectionState>,
+    pub peers: PeerCounter,
+    pub cancel: CancellationToken,
+}
+```
+
+An endpoint must:
+
+- Send bytes it reads to the other side with `context.forward(bytes)`. It returns false when the relay is gone, and the endpoint should then stop.
+- Report state with `context.report(ConnectionState::...)` and errors with `context.report_error(error)`.
+- Call `context.peers.joined()` and `left()` as peers come and go. Without this, nothing is delivered to it.
+- Take `WriteRequest` values from `link.writes`, write `request.bytes`, and call `request.delivered()` after each successful write.
+- Return soon after `context.cancel` is cancelled.
+
+An endpoint must not publish `Data` events itself. The relay and the `WriteRequest` receipt do that.
+
+### WriteRequest and delivery receipts
+
+```rust
+pub(crate) struct WriteRequest {
+    pub bytes: Bytes,
+    receipt: Arc<Receipt>,
+}
+```
+
+The receipt holds the `Event` to publish, the `Outlet` and a `completed` flag. `delivered()` flips the flag once, stamps the event with the current time, updates traffic counters and publishes it. A request cloned to several recipients (a TCP server broadcasting to many clients) therefore produces one event, not one per client. A unit test in `link.rs` named `broadcast_success_is_logged_once_after_a_recipient_writes` pins this.
+
+If every clone is dropped without `delivered()` being called, `Receipt::drop` publishes an undelivered event, but only for `Origin::Injected`. Dropped forwarded traffic is counted through `Event::Dropped` instead. That keeps an injection visible in the log even when it went nowhere.
+
+## The stream pump
+
+`stream.rs` is the shared read and write loop for any `AsyncRead + AsyncWrite` stream. TCP sockets and serial ports both use it.
+
+```rust
+const BUFFER_SIZE: usize = 4096;
+
+pub(crate) async fn pump<S, W>(stream: S, context: &Context, writes: &mut W) -> io::Result<()> {
+    let (mut reader, mut writer) = tokio::io::split(stream);
+    let mut buffer = vec![0u8; BUFFER_SIZE];
+    loop {
+        tokio::select! {
+            _ = context.cancel.cancelled() => return Ok(()),
+            read = reader.read(&mut buffer) => {
+                let count = read?;
+                if count == 0 || !context.forward(Bytes::copy_from_slice(&buffer[..count])).await {
+                    return Ok(());
+                }
+            }
+            outgoing = writes.next() => match outgoing {
+                Some(request) => { writer.write_all(&request.bytes).await?; request.delivered(); }
+                None => return Ok(()),
+            },
+        }
+    }
+}
+```
+
+Chunks are at most 4096 bytes. One read becomes one chunk becomes one `Data` event. Rift does not reassemble frames. For UART this means a message may arrive split across chunks.
+
+The pump is generic over a `WriteSource` trait. `mpsc::Receiver<WriteRequest>` implements it for clients. `PeerWrites` implements it for TCP server clients.
+
+`pump` returns `Err` on an I/O error and `Ok` on clean close, cancellation or EOF. The caller decides what happens next.
+
+## Reconnect and backoff
+
+`client_session::run_client` is shared by `tcp_client.rs` and `uart.rs`. It takes a `connect` closure, so the loop does not care whether it opens a socket or a serial port.
+
+```rust
+while !context.cancel.is_cancelled() {
+    context.report(ConnectionState::Connecting).await;
+    let connected = tokio::select! {
+        _ = context.cancel.cancelled() => break,
+        result = connect() => result,
+    };
+    match connected {
+        Ok(stream) => {
+            backoff.reset();
+            context.peers.joined();
+            context.report(ConnectionState::Connected { peer: peer.clone() }).await;
+            let result = pump(stream, &context, &mut writes).await;
+            context.peers.left();
+            report_end(&context, result).await;
+            while writes.try_recv().is_ok() {}
+        }
+        Err(error) => context.report_error(error).await,
+    }
+    tokio::select! {
+        _ = context.cancel.cancelled() => break,
+        _ = tokio::time::sleep(backoff.next_delay()) => {}
+    }
+}
+```
+
+After a connection ends, queued writes are drained and discarded. Stale bytes are never replayed onto a new connection.
+
+`Backoff` (`backoff.rs`) starts at the configured delay, doubles on every failure and caps at 10 seconds, or at the initial delay if that is larger. A successful connect resets it.
+
+```rust
+const MAXIMUM: Duration = Duration::from_secs(10);
+// next_delay: returns current, then current = (current * 2).min(maximum)
+```
+
+| Kind | Initial reconnect delay | Source |
+| --- | --- | --- |
+| TCP client | `reconnect_delay_ms`, default 1000 | `TcpClientConfig` |
+| UART | 500 ms, fixed | `RECONNECT_DELAY` in `uart.rs` |
+
+The UART reconnect matters for USB serial adapters that are unplugged and plugged back in.
+
+## The five kinds
+
+### TCP client (`tcp_client.rs`)
+
+`TcpClientConfig` has `address`, `reconnect_delay_ms` (1000), `connect_timeout_ms` (5000) and `no_delay` (true). `connect` wraps `TcpStream::connect` in `tokio::time::timeout` and sets `TCP_NODELAY`. The peer name reported in `Connected` is the address string.
+
+### TCP server (`tcp_server.rs`)
+
+`TcpServerConfig` has `bind`, `max_clients` (optional) and `no_delay`. The task:
+
+1. Binds. A bind error is reported and the task ends. There is no retry.
+2. Reports `Listening`.
+3. Loops over `accept` and `writes.recv()`.
+
+Each accepted client gets a `serve_client` task and a `broadcast::Receiver<WriteRequest>` from a channel of 256. Writes from the relay are sent to the broadcaster, so every connected client gets every chunk. When the broadcast receiver falls behind, `PeerWrites` counts the skipped messages in its own `DropTally` and reports them as `Event::Dropped` with the client's address in `peer`.
+
+When `max_clients` is reached, a new connection is dropped and an error is reported. When the last client leaves, the server reports `Listening` again.
+
+### UDP client (`udp_client.rs`)
+
+`UdpClientConfig` has `remote` and an optional `bind`. It resolves `remote`, binds (default `0.0.0.0:0` or `[::]:0` to match the address family), then `connect`s the socket, so `send` and `recv` talk to that one peer. It reports `Connected` immediately, because UDP has no handshake. A datagram can be up to 65535 bytes. There is no reconnect loop: if bind or resolve fails, the task reports the error and ends.
+
+### UDP server (`udp_server.rs`)
+
+`UdpServerConfig` has `bind`, `reply_to` (`all` or `last`, default `all`) and `peer_timeout_secs` (optional). A `Peers` struct remembers the last time each sender was heard.
+
+- First datagram from a new address: `peers.joined()` and `Connected { peer }`.
+- Outgoing write: sent to every known peer (`all`) or the latest one (`last`). `delivered()` is called per successful `send_to`.
+- With `peer_timeout_secs` set, a one-second `interval` sweeps and drops silent peers, reporting `Disconnected` for each and `Listening` when none are left.
+
+### UART (`uart.rs`)
+
+`UartConfig` has `port`, `baud_rate`, `data_bits` (8), `parity`, `stop_bits` (1) and `flow_control`. `Parity` and `FlowControl` are small enums with `Display` and `FromStr` impls, so the URI parser and TOML share them. `open_port` maps them to `tokio_serial` types and validates ranges: data bits 5 to 8, stop bits 1 or 2. It then runs through `run_client`, so a serial port gets the same reconnect loop as a TCP client. Opening the port is the "connect".
+
+## Why the shape is this way
+
+- One `Link` type keeps endpoints independent of the bridge. You can test an endpoint with channels and no bridge (`stream.rs` does this with `tokio::io::duplex`).
+- `try_send` into endpoints, with the receipt pattern, keeps a slow destination from stalling a fast source.
+- Reporting state over a channel instead of calling a shared object keeps endpoints free of locks.

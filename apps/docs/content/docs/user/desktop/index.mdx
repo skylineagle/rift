@@ -1,0 +1,61 @@
+---
+title: Desktop app overview
+description: The Rift desktop app, its layout, and how it relates to the CLI and the config file.
+---
+
+The desktop app wraps the same engine as the CLI with a window for profiles, live traffic and data injection. It reads and writes the same config file as the CLI, so profiles you add with `rift profile add` appear in the app, and the other way around.
+
+![Rift desktop app showing a running bridge with live traffic](/screenshots/desktop-overview.png)
+
+![Rift desktop app in dark mode](/screenshots/desktop-overview-dark.png)
+
+## Layout
+
+- **Profiles sidebar** (left): your profiles. Add a profile, import a configuration file, switch the theme, and open the logging settings.
+- **Bridge section** (top of the main panel): side A and side B as two cards, each with its endpoint settings, status, throughput and a play or pause button.
+- **Traffic log** (middle): live data and status events for the selected profile.
+- **Workflows panel** (right of the log, when open): the profile's workflows.
+- **Inject bar** (bottom): send bytes into the bridge.
+
+On a fresh install there are no profiles and the app shows an empty state with a button to create your first bridge.
+
+![Empty state with Create your first bridge](/screenshots/desktop-empty.png)
+
+## How it relates to the CLI
+
+| | CLI | Desktop app |
+| --- | --- | --- |
+| Config file | Shared | Shared |
+| Install | Separate, or bundled with the app | Bundles the `rift` CLI |
+| Inject from another terminal | `rift inject` reaches the app | Receives it |
+| Logging | `[logging]` section | Same section, edited in the app |
+
+`rift inject` and `rift workflow` can control profiles that are running in the app. See [Injection](/docs/user/injection).
+
+The default log file name for the app is `rift-desktop.log` when no `file_name` is set.
+
+## Pages
+
+<Cards>
+  <Card title="Profiles and endpoints" href="/docs/user/desktop/profiles-and-endpoints">
+    Create, edit, copy and delete profiles. Configure each side.
+  </Card>
+  <Card title="Live traffic" href="/docs/user/desktop/live-traffic">
+    Read, filter, pause and export the traffic log.
+  </Card>
+  <Card title="Injecting" href="/docs/user/desktop/injecting">
+    Send text, hex, binary or a file. Repeat sends.
+  </Card>
+  <Card title="Workflows" href="/docs/user/desktop/workflows">
+    Build, run and stop workflows.
+  </Card>
+  <Card title="Logging settings" href="/docs/user/desktop/logging-settings">
+    Console, file and HTTP sinks.
+  </Card>
+  <Card title="Config import" href="/docs/user/desktop/config-import">
+    Import profiles from a TOML file.
+  </Card>
+  <Card title="Updates" href="/docs/user/desktop/updates">
+    How the app updates itself.
+  </Card>
+</Cards>

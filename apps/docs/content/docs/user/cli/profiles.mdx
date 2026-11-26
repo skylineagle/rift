@@ -1,0 +1,60 @@
+---
+title: rift profile
+description: Add, list and remove saved profiles in the config file.
+---
+
+```sh
+rift profile list [-c <PATH>]
+rift profile add <NAME> <A> <B> [-c <PATH>]
+rift profile remove <NAME> [-c <PATH>]
+```
+
+All three read and write the config file. The path is `-c, --config`, then `RIFT_CONFIG`, then `rift/rift.toml` in the OS config directory. See [Concepts](/docs/user/concepts#config-file).
+
+## `profile list`
+
+Prints one line per profile: `name  a  b`. A missing config file prints nothing.
+
+```sh
+rift profile list
+```
+
+```text
+gps  tcp-server://0.0.0.0:9000  uart:///dev/ttyUSB0?baud=9600&parity=none&data_bits=8&stop_bits=1&flow=none
+```
+
+## `profile add`
+
+Adds a profile with side A and side B as endpoint URIs. It creates the config file and its folder if they do not exist, and fails if the name is already used. Profiles you add have no workflows, so edit the file to add them.
+
+```sh
+rift profile add gps tcp-server://0.0.0.0:9000 "uart:///dev/ttyUSB0?baud=9600"
+rift profile add uplink "uart:///dev/ttyUSB1?baud=115200" "tcp://ingest.example.com:7000?reconnect_delay_ms=250"
+rift profile add standby tcp-server://0.0.0.0:9100 "tcp://example.com:7000?enabled=false" -c ./rift.toml
+```
+
+To change a profile, `remove` and `add` it again, or edit the TOML.
+
+## `profile remove`
+
+Removes a profile by name. It fails if the file or the name does not exist.
+
+```sh
+rift profile remove gps
+```
+
+<Callout type="warn">
+Saving rewrites the whole file, so comments you wrote by hand are lost. Keep hand-written configs under version control, or edit them with a text editor only.
+</Callout>
+
+## Check a config file
+
+```sh
+rift profile list -c ./rift.toml
+```
+
+A parse error is printed and the command exits with an error.
+
+## Logging
+
+`profile add` and `remove` write `profile.added` and `profile.removed` records to the sinks enabled in `[logging]`.

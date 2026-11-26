@@ -1,0 +1,170 @@
+---
+title: Endpoints
+description: Every endpoint kind with its URI syntax, options, defaults and TOML equivalent.
+---
+
+You describe an endpoint either as a URI on the command line or as an inline table in `rift.toml`. Both set the same options.
+
+## URI syntax
+
+```text
+<scheme>://<location>[?option=value&option=value]
+```
+
+- `<scheme>` is `tcp`, `tcp-server`, `udp`, `udp-server` or `uart`.
+- `<location>` is an address, or a serial port name for `uart`.
+- Options are query parameters. Every option needs a value (`?enabled` alone is an error).
+- Unknown options and unknown schemes are rejected.
+- Quote the URI in your shell when it contains `?` or `&`.
+
+Omitted options use their default. The `enabled` option works on every kind.
+
+## Options common to all kinds
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `true` | `false` leaves the side closed. Data heading to it is dropped and it reports `disabled`. |
+
+In TOML, `enabled` goes next to `kind` in the side table. In a URI it goes in the query: `tcp://example.com:7000?enabled=false`.
+
+## TCP client
+
+Connects to a remote host. If the connection fails or drops, it reconnects. The delay starts at `reconnect_delay_ms` and doubles after each failure up to 10 seconds, and resets after a successful connection.
+
+| | |
+| --- | --- |
+| URI | `tcp://host:port[?options]` |
+| TOML | `{ kind = "tcp-client", address = "host:port" }` |
+
+| URI option | TOML key | Default | Meaning |
+| --- | --- | --- | --- |
+| (location) | `address` | required | Remote `host:port`. |
+| `reconnect_delay_ms` | `reconnect_delay_ms` | `1000` | Initial reconnect delay in milliseconds. |
+| `connect_timeout_ms` | `connect_timeout_ms` | `5000` | Give up one connection attempt after this long. |
+| `no_delay` | `no_delay` | `true` | Set `TCP_NODELAY`. |
+
+```sh
+rift pipe "tcp://192.168.1.20:4000?reconnect_delay_ms=200&connect_timeout_ms=2000" tcp-server://0.0.0.0:9000
+```
+
+```toml
+a = { kind = "tcp-client", address = "192.168.1.20:4000", reconnect_delay_ms = 200, connect_timeout_ms = 2000 }
+```
+
+## TCP server
+
+Listens on an address and accepts many clients. Data written to this side goes to every connected client. Data any client sends goes to the other side. With no client connected, data heading to this side is not delivered.
+
+| | |
+| --- | --- |
+| URI | `tcp-server://bind-address:port[?options]` |
+| TOML | `{ kind = "tcp-server", bind = "0.0.0.0:9000" }` |
+
+| URI option | TOML key | Default | Meaning |
+| --- | --- | --- | --- |
+| (location) | `bind` | required | Local address to listen on. |
+| `max_clients` | `max_clients` | unlimited | Extra connections are accepted, then closed, and an error event is reported. |
+| `no_delay` | `no_delay` | `true` | Set `TCP_NODELAY` on accepted connections. |
+
+```sh
+rift pipe "tcp-server://0.0.0.0:9000?max_clients=1" tcp://example.com:7000
+```
+
+```toml
+a = { kind = "tcp-server", bind = "0.0.0.0:9000", max_clients = 1 }
+```
+
+<Callout type="warn">
+`0.0.0.0` listens on every network interface. Use `127.0.0.1` when only this machine should connect.
+</Callout>
+
+## UDP client
+
+Opens a UDP socket and sends to one fixed remote address. It receives datagrams from that address.
+
+| | |
+| --- | --- |
+| URI | `udp://host:port[?bind=addr:port]` |
+| TOML | `{ kind = "udp-client", remote = "host:port" }` |
+
+| URI option | TOML key | Default | Meaning |
+| --- | --- | --- | --- |
+| (location) | `remote` | required | Remote `host:port`. The name is resolved when the socket opens. |
+| `bind` | `bind` | auto | Local address to bind. By default `0.0.0.0:0` (or `[::]:0` for an IPv6 remote). |
+
+```sh
+rift pipe "udp://10.0.0.5:6000?bind=0.0.0.0:7000" udp-server://0.0.0.0:5000
+```
+
+```toml
+a = { kind = "udp-client", remote = "10.0.0.5:6000", bind = "0.0.0.0:7000" }
+```
+
+## UDP server
+
+Listens for datagrams. It remembers the peers that sent to it and writes data for this side back to them.
+
+| | |
+| --- | --- |
+| URI | `udp-server://bind-address:port[?options]` |
+| TOML | `{ kind = "udp-server", bind = "0.0.0.0:5000" }` |
+
+| URI option | TOML key | Default | Meaning |
+| --- | --- | --- | --- |
+| (location) | `bind` | required | Local address to listen on. |
+| `reply_to` | `reply_to` | `all` | `all` or `last`: which peers receive data written to this side. |
+| `peer_timeout_secs` | `peer_timeout_secs` | none | Forget peers that stay silent this long and emit a `disconnected` status. |
+
+```sh
+rift pipe "udp-server://0.0.0.0:5000?reply_to=last&peer_timeout_secs=30" "uart:///dev/ttyUSB0?baud=38400"
+```
+
+```toml
+a = { kind = "udp-server", bind = "0.0.0.0:5000", reply_to = "last", peer_timeout_secs = 30 }
+```
+
+## Serial (UART)
+
+Opens a serial port. If opening fails or the device disappears, Rift retries.
+
+| | |
+| --- | --- |
+| URI | `uart:///dev/ttyUSB0?baud=115200[&options]` (Windows: `uart://COM3?baud=9600`) |
+| TOML | `{ kind = "uart", port = "/dev/ttyUSB0", baud_rate = 115200 }` |
+
+| URI option | TOML key | Default | Values |
+| --- | --- | --- | --- |
+| (location) | `port` | required | Port path or name. Run [`rift ports`](/docs/user/cli/ports) to list them. |
+| `baud` | `baud_rate` | required | Baud rate, for example `9600`, `115200`. |
+| `data_bits` | `data_bits` | `8` | `5` to `8` |
+| `parity` | `parity` | `none` | `none`, `odd`, `even` |
+| `stop_bits` | `stop_bits` | `1` | `1` or `2` |
+| `flow` | `flow_control` | `none` | `none`, `software`, `hardware` |
+
+<Callout type="info">
+The serial option names differ between a URI and TOML: the URI uses `baud` and `flow`, TOML uses `baud_rate` and `flow_control`. All other option names match.
+</Callout>
+
+```sh
+# 8E1 with hardware flow control
+rift pipe tcp-server://0.0.0.0:9000 "uart:///dev/ttyUSB0?baud=9600&parity=even&flow=hardware"
+
+# 7E2
+rift pipe tcp-server://0.0.0.0:9000 "uart:///dev/ttyUSB1?baud=9600&data_bits=7&parity=even&stop_bits=2"
+```
+
+```toml
+b = { kind = "uart", port = "/dev/ttyUSB1", baud_rate = 9600, data_bits = 7, parity = "even", stop_bits = 2, flow_control = "hardware" }
+```
+
+## Disabled sides
+
+```sh
+rift pipe tcp-server://0.0.0.0:9000 "tcp://example.com:7000?enabled=false"
+```
+
+Side B stays closed. Turn it on later by typing `b on` on stdin, or with the side switch in the desktop app. See [Injection](/docs/user/injection).
+
+## Profile listing format
+
+`rift profile list` prints each side as a URI. Default options are left out, and a disabled side gets `enabled=false` appended. A serial endpoint always prints all of its options.

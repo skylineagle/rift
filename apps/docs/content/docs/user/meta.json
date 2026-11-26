@@ -1,0 +1,20 @@
+{
+  "title": "User manual",
+  "defaultOpen": true,
+  "pages": [
+    "index",
+    "installation",
+    "concepts",
+    "endpoints",
+    "configuration",
+    "injection",
+    "workflows",
+    "logging",
+    "cli",
+    "desktop",
+    "container",
+    "examples",
+    "agent-skills",
+    "troubleshooting"
+  ]
+}

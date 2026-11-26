@@ -1,0 +1,211 @@
+---
+title: Logging pipeline
+description: How logging/* turns events into records, queues them, writes them to file, HTTP and console sinks, rotates files and reconfigures at runtime.
+---
+
+Logging is optional structured output for operators. It is separate from the event stream that drives UIs. The code is in `crates/rift-core/src/logging/`.
+
+```text
+logging/
+  mod.rs        public exports
+  config.rs     LoggingConfig and per-sink configs
+  level.rs      LogLevel
+  record.rs     LogRecord
+  logger.rs     Logger, the worker thread, commands
+  queue.rs      bounded queue with drop counting
+  sinks.rs      Sinks: owns and reconfigures the sinks
+  console_sink.rs  file_sink.rs  http_sink.rs
+  rotation.rs   rotated file naming and cleanup
+  watcher.rs    Logger::watch: events and stats to records
+  stats.rs      traffic deltas
+  injection.rs  data.injected records
+```
+
+## Overview
+
+```text
+ Rift, Bridge, Workflows, ControlServer   Logger::watch task
+ (call logger.log(record))                (lifecycle events, stats timer)
+            \                               /
+             v                             v
+        Logger::log  ----> bounded queue (10 000) ----> logger thread
+        (level filter,      offer = non-blocking          Sinks::write
+         drop if full)                                     |-- ConsoleSink  (stderr)
+                                                           |-- FileSink     (rotating)
+                                                           `-- HttpSink     (own thread, batches)
+```
+
+## Records
+
+`LogRecord` (`record.rs`) serializes as a flat JSON object that Elastic-style collectors accept:
+
+```json
+{
+  "@timestamp": "2026-11-26T10:00:00.000Z",
+  "level": "info",
+  "event": "side.connected",
+  "message": "gps A connected 10.0.0.5:51234",
+  "service": "rift",
+  "profile": "gps",
+  "side": "A",
+  "peer": "10.0.0.5:51234"
+}
+```
+
+`profile` and `side` are omitted when absent. Extra fields are flattened into the object. Build records with the fluent API:
+
+```rust
+LogRecord::info("profile.started", "gps started")
+    .profile("gps")
+    .field("a_enabled", true)
+```
+
+`event` is a stable dotted name for filtering. `message` is for humans.
+
+| Event | Level | Source |
+| --- | --- | --- |
+| `profile.started`, `profile.stopped` | info | `Rift` |
+| `side.enabled`, `side.disabled` | info | `Rift` |
+| `side.listening`, `side.connecting` | debug | watcher |
+| `side.connected`, `side.disconnected` | info | watcher |
+| `side.error` | error | watcher |
+| `data.dropped` | warn | watcher |
+| `data.injected` | debug | `Receipt` accounting (`injection.rs`) |
+| `control.inject` | info | control dispatch |
+| `control.failed` | error | desktop, when the control server fails to start |
+| `workflow.started`, `workflow.finished`, `workflow.stopped` | info | runner |
+| `workflow.failed` | error | runner and autostart failures |
+| `stats.profile` | info | watcher |
+| `logging.configured` | info | `Logger::reconfigure` |
+| `logging.dropped` | warn | queue overflow report |
+| `profile.added`, `profile.removed`, `profile.updated`, `profile.renamed` | info | CLI `profile` commands and desktop commands |
+
+Data chunks are not logged as records. Only injections are, and only at debug level. Logging every chunk would swamp the queue.
+
+## Config
+
+`LoggingConfig` lives in the `[logging]` table of the config file. All fields have defaults (`#[serde(default)]`) and every sink is off by default:
+
+| Field | Default |
+| --- | --- |
+| `level` | `info` |
+| `stats_interval_secs` | 60. `0` turns stats off. |
+| `console.enabled`, `console.format` | off, `text` (or `json`) |
+| `file.enabled` | off |
+| `file.directory` | unset: `default_log_directory()`, which is `<OS local data dir>/rift/logs` |
+| `file.file_name` | empty: the host's default, `rift-cli.log` or `rift-desktop.log` |
+| `file.rotate` | `size` (also `hourly`, `daily`) |
+| `file.max_file_bytes` | 10 MiB |
+| `file.max_files` | 10 (`0` is unlimited) |
+| `file.max_total_bytes` | unset |
+| `http.enabled`, `http.url` | off, `http://localhost:8080` |
+| `http.format` | `ndjson` (or `json-array`) |
+| `http.batch_size`, `flush_interval_secs`, `timeout_secs` | 100, 5, 10 |
+| `http.headers` | empty map |
+
+The default file name is passed to the logger at creation: `Logger::with_default_file_name(config, "rift-cli.log")`. That keeps the CLI and desktop log files apart when they share a directory.
+
+## The Logger
+
+`Logger` is a cheap `Clone` around an `Arc<Shared>`.
+
+```rust
+enum Command {
+    Record(Box<LogRecord>),
+    Configure(Box<LoggingConfig>),
+    Flush(Sender<()>),
+}
+```
+
+`Logger::new` creates the bounded queue and spawns one OS thread running `run(Sinks, Inbox<Command>)`. Using a thread and a blocking channel means a slow disk or a slow HTTP server never touches the tokio runtime.
+
+`Logger::log(record)`:
+
+1. Updates the running-profile set when the event is `profile.started` or `profile.stopped`. The stats reporter uses this set.
+2. Checks `enabled(level)`: at least one sink is enabled and the level is at or above the configured level.
+3. Calls `commands.offer(...)`. `offer` never blocks.
+
+With the default config, `enabled` is false and a call costs one read lock.
+
+### The queue (`queue.rs`)
+
+`bounded(capacity)` returns an `Outbox` and an `Inbox` sharing an `AtomicU64` drop counter.
+
+- `offer(item)` uses `try_send`. If the queue is full the item is discarded and the counter incremented.
+- `deliver(item, timeout)` retries `try_send` with 1 ms sleeps until the timeout. It is for commands that must not be lost: `Configure` and `Flush`.
+- `Inbox::receive` returns `Item`, `Dropped(n)`, `TimedOut` or `Closed`. When the queue is empty and the counter is non-zero, it returns `Dropped(n)` first.
+
+The worker turns `Dropped(n)` into a `logging.dropped` warn record. So overflow is itself logged, once, after the burst. The queue holds 10 000 commands. The test `counts_overflow_and_reports_it_once_drained` pins the behaviour.
+
+### Flush and shutdown
+
+`Logger::flush()` sends a `Flush` command carrying a channel and waits up to 5 seconds for the worker to confirm. The worker writes any pending drop count, flushes console and file, and asks the HTTP sink to send everything it holds. Hosts call `flush()` on shutdown. The CLI also sleeps 200 ms first so the last records have reached the queue (`LOG_DRAIN_DELAY` in `host_setup.rs`).
+
+### Runtime reconfiguration
+
+`Logger::reconfigure(config)` sends `Configure` through `deliver`, then stores the new config and logs `logging.configured`. A mutex orders concurrent reconfigures so the worker and the stored config agree. The desktop's `save_logging_config` command uses this.
+
+`Sinks::configure` only rebuilds a sink when its own config changed:
+
+```rust
+if self.config.file != config.file || self.file.is_none() {
+    self.file = config.file.enabled.then(|| FileSink::new(&config.file.named(&self.default_file_name)));
+}
+```
+
+Changing the console format does not reopen the log file or reset the HTTP buffer.
+
+## Sinks
+
+### Console
+
+`console_sink.rs` writes to stderr. `text` renders `HH:MM:SS.mmm LEVEL event message` in local time. `json` writes the record JSON.
+
+### File
+
+`file_sink.rs` appends one JSON line per record. It keeps the file open and tracks its size.
+
+`needs_rotation` is checked before each write. A file with zero bytes never rotates.
+
+- `size`: rotate when `bytes + incoming > max_file_bytes`.
+- `hourly` and `daily`: rotate when the formatted period (`%Y-%m-%dT%H` or `%Y-%m-%d`) of the file's opening time differs from now. The opening time is the file's modified time if it already has content, so a restart in the same period keeps appending.
+
+`rotation.rs` owns naming and cleanup. A rotated file is renamed to `<stem>.<YYYY-MM-DDTHH-MM-SS>[-n]<ext>`, for example `rift-cli.2026-11-26T10-00-00.log`. When two rotations happen in the same second, a sequence suffix is added. After a rotation, `clean_up` first deletes the oldest files beyond `max_files` (0 means unlimited), then the oldest until the total size, including the current file, is within `max_total_bytes`.
+
+The sink takes an injectable `Clock` (`with_clock`) so tests can drive time. A write error is printed to stderr once per failure streak, not once per record.
+
+### HTTP
+
+`http_sink.rs` runs its own worker thread with its own bounded queue, so a hung endpoint does not block the file or console sink. The worker:
+
+- Keeps a `Buffer` of at most 10 000 serialized records. When full, the oldest record is discarded.
+- Sends a batch when the buffer reaches `batch_size`, when `flush_interval_secs` passes, or on flush.
+- POSTs through `ureq` with the configured timeout and headers. Content type is `application/x-ndjson` or `application/json`. `json-array` bodies are `[` records joined by commas `]`.
+- On failure, keeps the records and stops sending new batches until the next interval. It prints one stderr line per failure streak.
+
+Because the HTTP sink retains records on failure, a short outage does not lose logs. A long one drops the oldest.
+
+## The watcher
+
+`Logger::watch(lifecycle, traffic)` is an async method run as a task by each host:
+
+```rust
+tokio::spawn(rift.logger().clone().watch(rift.subscribe_lifecycle(), rift.traffic_registry()));
+```
+
+It subscribes to the lifecycle channel, so it never sees data. It converts `Status` events and `Dropped` events to records, and ignores `Disabled` states. `Data` and `Workflow` events are not converted.
+
+A one-second tick checks whether `stats_interval_secs` has passed. If so, `Statistics::report` emits one `stats.profile` record per running profile, with the traffic deltas for sides `a` and `b` since the last report:
+
+```text
+event = stats.profile
+interval_secs = 60
+a = { received_bytes, received_chunks, sent_bytes, sent_chunks, injected_bytes, undelivered_chunks }
+b = same six counters
+```
+
+When stats are off (`0`), the watcher rebases the baseline instead, so turning stats on later does not report a huge first delta.
+
+## Failure policy
+
+Every sink failure goes to stderr and never reaches the engine. Logging must not stop a bridge. The queue is bounded, `offer` does not block and the sinks run on their own threads, so a broken sink cannot slow traffic.
