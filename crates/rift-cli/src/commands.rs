@@ -103,7 +103,12 @@ async fn serve(
         bail!("no profiles to run");
     }
     let mut host = Host::new(logging);
-    let printer = tokio::spawn(print_events(host.rift.subscribe(), output));
+    let events = if output.quiet {
+        host.rift.subscribe_lifecycle()
+    } else {
+        host.rift.subscribe()
+    };
+    let printer = tokio::spawn(print_events(events, output));
     host.start_profiles(&profiles)?;
     host.accept_remote_commands(profiles);
     tokio::spawn(read_commands(host.rift.clone()));
