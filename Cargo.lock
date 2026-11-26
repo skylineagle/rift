@@ -3385,6 +3385,7 @@ name = "rift-bridge-core"
 version = "0.2.1"
 dependencies = [
  "amqprs",
+ "async-trait",
  "base64 0.22.1",
  "bytes",
  "chrono",

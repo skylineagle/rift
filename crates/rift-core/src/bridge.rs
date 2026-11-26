@@ -8,7 +8,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::drops::DropTally;
-use crate::endpoint::link::{Context, Link, WriteRequest};
+use crate::endpoint::link::{Context, Inbound, Link, WriteRequest};
 use crate::endpoint::{self, Endpoint};
 use crate::event::{ConnectionState, Event, Origin};
 use crate::outlet::Outlet;
@@ -100,7 +100,7 @@ struct RunningEndpoint {
 struct SideControl {
     endpoint: Mutex<Endpoint>,
     handle: SideHandle,
-    reads: mpsc::Sender<Bytes>,
+    reads: mpsc::Sender<Inbound>,
     states: mpsc::Sender<ConnectionState>,
     running: AsyncMutex<Option<RunningEndpoint>>,
 }
@@ -154,7 +154,7 @@ fn create_side(
     parent: &CancellationToken,
 ) -> (
     SideControl,
-    mpsc::Receiver<Bytes>,
+    mpsc::Receiver<Inbound>,
     mpsc::Receiver<ConnectionState>,
     watch::Sender<ConnectionState>,
 ) {
@@ -337,7 +337,7 @@ impl Drop for Bridge {
 
 struct RelayChannels {
     states: mpsc::Receiver<ConnectionState>,
-    reads: mpsc::Receiver<Bytes>,
+    reads: mpsc::Receiver<Inbound>,
     state_sender: watch::Sender<ConnectionState>,
     stop: CancellationToken,
 }
@@ -356,16 +356,18 @@ async fn relay_side(
                 channels.state_sender.send_replace(state.clone());
                 outlet.events.publish(Event::status(&profile, side, state));
             }
-            Some(bytes) = channels.reads.recv() => {
-                outlet.traffic.side(side).record_received(bytes.len());
-                outlet.events.publish(Event::data(
-                    &profile, side, side.opposite(), Origin::Received, &bytes, true,
-                ));
+            Some(Inbound { bytes, confirmation, retried }) = channels.reads.recv() => {
+                if !retried {
+                    outlet.traffic.side(side).record_received(bytes.len());
+                    outlet.events.publish(Event::data(
+                        &profile, side, side.opposite(), Origin::Received, &bytes, true,
+                    ));
+                }
                 let request = WriteRequest::new(
                     bytes.clone(),
                     Event::data(&profile, side, side.opposite(), Origin::Forwarded, &bytes, true),
                     outlet.clone(),
-                );
+                ).confirming(confirmation);
                 if let Err(message) = opposite.deliver(request) {
                     outlet.events.publish(Event::status(&profile, side.opposite(), ConnectionState::Error { message }));
                 }

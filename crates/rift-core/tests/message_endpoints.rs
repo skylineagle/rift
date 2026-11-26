@@ -2,12 +2,13 @@ use std::net::TcpListener as StdTcpListener;
 use std::time::Duration;
 
 use amqprs::channel::{
-    BasicConsumeArguments, BasicPublishArguments, QueueDeclareArguments, QueuePurgeArguments,
+    BasicConsumeArguments, BasicPublishArguments, Channel, QueueDeclareArguments,
+    QueueDeleteArguments, QueuePurgeArguments,
 };
 use amqprs::connection::{Connection, OpenConnectionArguments};
-use amqprs::BasicProperties;
+use amqprs::{BasicProperties, FieldTable};
 use futures_util::{SinkExt, StreamExt};
-use rift_core::{ConnectionState, Event, Profile, Rift, Side};
+use rift_core::{ConnectionState, Event, Origin, Profile, Rift, Side, Target};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast::Receiver;
@@ -180,6 +181,165 @@ async fn websocket_client_reconnects_and_sends_text() {
         drop(server);
     }
     rift.stop("test").await.unwrap();
+}
+
+async fn broker() -> (String, Connection, Channel) {
+    let url = std::env::var("RIFT_AMQP_URL").expect("RIFT_AMQP_URL");
+    let connection = Connection::open(&OpenConnectionArguments::try_from(url.as_str()).unwrap())
+        .await
+        .unwrap();
+    let channel = connection.open_channel(None).await.unwrap();
+    (url, connection, channel)
+}
+
+async fn recreate_queue(channel: &Channel, queue: &str, arguments: FieldTable) {
+    channel
+        .queue_delete(QueueDeleteArguments::new(queue))
+        .await
+        .unwrap();
+    channel
+        .queue_declare(
+            QueueDeclareArguments::durable_client_named(queue)
+                .arguments(arguments)
+                .finish(),
+        )
+        .await
+        .unwrap();
+}
+
+async fn publish_to_queue(channel: &Channel, queue: &str, content: &[u8]) {
+    channel
+        .basic_publish(
+            BasicProperties::default(),
+            content.to_vec(),
+            BasicPublishArguments::new("", queue),
+        )
+        .await
+        .unwrap();
+}
+
+async fn wait_for_injection(events: &mut Receiver<Event>) -> (bool, Option<String>) {
+    timeout(WAIT, async {
+        loop {
+            if let Event::Data {
+                origin: Origin::Injected,
+                delivered,
+                undelivered_reason,
+                ..
+            } = events.recv().await.unwrap()
+            {
+                return (delivered, undelivered_reason);
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for the injection receipt")
+}
+
+#[tokio::test]
+#[ignore = "needs a RabbitMQ broker, set RIFT_AMQP_URL"]
+async fn rabbitmq_keeps_deliveries_until_the_other_side_accepts_them() {
+    let (url, _connection, channel) = broker().await;
+    for kind in ["classic", "quorum", "stream"] {
+        let queue = format!("rift-test-retry-{kind}");
+        recreate_queue(&channel, &queue, queue_type_arguments(kind)).await;
+        let tcp_port = free_port();
+        let rift = Rift::new();
+        let mut events = rift.subscribe();
+        start(
+            &rift,
+            format!("{url}?queue={queue}&queue_type={kind}&reconnect_delay_ms=100"),
+            tcp_port,
+        );
+        wait_for_state(&mut events, Side::A, is_connected).await;
+        publish_to_queue(&channel, &queue, b"keep-me").await;
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        assert_eq!(rift.traffic()["test"].a.received_chunks, 1, "{kind}");
+        let mut tcp = TcpStream::connect(("127.0.0.1", tcp_port)).await.unwrap();
+        assert_eq!(read_exact(&mut tcp, 7).await, b"keep-me", "{kind}");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        rift.stop("test").await.unwrap();
+        if kind != "stream" {
+            assert_eq!(ready_messages(&channel, &queue).await, 0, "{kind}");
+        }
+    }
+}
+
+async fn ready_messages(channel: &Channel, queue: &str) -> u32 {
+    let arguments = QueueDeclareArguments::new(queue)
+        .passive(true)
+        .durable(true)
+        .finish();
+    channel.queue_declare(arguments).await.unwrap().unwrap().1
+}
+
+fn queue_type_arguments(kind: &str) -> FieldTable {
+    let mut arguments = FieldTable::new();
+    arguments.insert("x-queue-type".try_into().unwrap(), kind.into());
+    arguments
+}
+
+#[tokio::test]
+#[ignore = "needs a RabbitMQ broker, set RIFT_AMQP_URL"]
+async fn rabbitmq_reports_the_broker_outcome_of_a_publish() {
+    let (url, _connection, channel) = broker().await;
+    recreate_queue(&channel, "rift-test-confirm", FieldTable::new()).await;
+    for (routing_key, expected) in [("rift-test-confirm", true), ("rift-test-missing", false)] {
+        let rift = Rift::new();
+        let mut events = rift.subscribe();
+        start(
+            &rift,
+            format!("{url}?routing_key={routing_key}"),
+            free_port(),
+        );
+        wait_for_state(&mut events, Side::A, is_connected).await;
+        rift.inject("test", Target::A, &b"payload"[..]).unwrap();
+        let (delivered, reason) = wait_for_injection(&mut events).await;
+        assert_eq!(delivered, expected, "{routing_key}: {reason:?}");
+        if !expected {
+            assert!(reason.unwrap().contains("NO_ROUTE"));
+        }
+        rift.stop("test").await.unwrap();
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs a RabbitMQ broker, set RIFT_AMQP_URL"]
+async fn rabbitmq_reconnects_after_the_broker_closes_a_publish_channel() {
+    let (url, _connection, _channel) = broker().await;
+    let rift = Rift::new();
+    let mut events = rift.subscribe();
+    start(
+        &rift,
+        format!("{url}?exchange=rift-test-no-such-exchange&reconnect_delay_ms=100"),
+        free_port(),
+    );
+    wait_for_state(&mut events, Side::A, is_connected).await;
+    rift.inject("test", Target::A, &b"payload"[..]).unwrap();
+    wait_for_state(&mut events, Side::A, is_closed_channel).await;
+    wait_for_state(&mut events, Side::A, is_connected).await;
+    rift.stop("test").await.unwrap();
+}
+
+fn is_closed_channel(state: &ConnectionState) -> bool {
+    matches!(state, ConnectionState::Error { message } if message.contains("closed the channel: 404"))
+}
+
+#[tokio::test]
+async fn rabbitmq_oversized_routing_key_is_a_configuration_error() {
+    let rift = Rift::new();
+    let mut events = rift.subscribe();
+    start(
+        &rift,
+        format!("amqp://127.0.0.1:1?routing_key={}", "k".repeat(256)),
+        free_port(),
+    );
+    wait_for_state(&mut events, Side::A, is_oversized_field).await;
+    rift.stop("test").await.unwrap();
+}
+
+fn is_oversized_field(state: &ConnectionState) -> bool {
+    matches!(state, ConnectionState::Error { message } if message.contains("routing_key is longer"))
 }
 
 #[tokio::test]

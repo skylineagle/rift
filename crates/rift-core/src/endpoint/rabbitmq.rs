@@ -1,9 +1,13 @@
+mod acknowledgements;
+mod publisher;
+
 use std::io;
 use std::time::Duration;
 
 use amqprs::channel::{
     BasicAckArguments, BasicConsumeArguments, BasicPublishArguments, BasicQosArguments, Channel,
-    ConsumerMessage, ExchangeDeclareArguments, QueueBindArguments, QueueDeclareArguments,
+    ConfirmSelectArguments, ConsumerMessage, ExchangeDeclareArguments, QueueBindArguments,
+    QueueDeclareArguments,
 };
 use amqprs::connection::{Connection, OpenConnectionArguments};
 use amqprs::{BasicProperties, FieldTable, FieldValue};
@@ -12,6 +16,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
+use self::acknowledgements::{Acknowledgements, Held, Settlement};
+use self::publisher::{BrokerCallbacks, BrokerSignal, Outbox};
 use super::client_session::{run_session_client, Session};
 use super::link::{Context, Link, WriteRequest};
 use super::message_format::text_enum;
@@ -101,6 +107,8 @@ pub struct RabbitMqConfig {
     pub connect_timeout_ms: u64,
 }
 
+const SHORT_STRING_LIMIT: usize = 255;
+
 fn enabled() -> bool {
     true
 }
@@ -148,6 +156,26 @@ impl RabbitMqConfig {
             Some(queue) if !queue.is_empty() => format!("{host} · {queue}"),
             _ if !self.exchange.is_empty() => format!("{host} · {}", self.exchange),
             _ => host.to_string(),
+        }
+    }
+
+    fn connection_arguments(&self) -> Result<OpenConnectionArguments, String> {
+        let arguments = OpenConnectionArguments::try_from(self.url.as_str())
+            .map_err(|error| format!("invalid broker url: {error}"))?;
+        let short_strings = [
+            ("virtual host", Some(arguments.get_virtual_host())),
+            ("exchange", Some(self.exchange.as_str())),
+            ("routing_key", Some(self.routing_key.as_str())),
+            ("queue", self.queue.as_deref()),
+            ("binding_key", self.binding_key.as_deref()),
+            ("content_type", self.content_type.as_deref()),
+        ];
+        let oversized = short_strings
+            .iter()
+            .find(|(_, value)| value.is_some_and(|value| value.len() > SHORT_STRING_LIMIT));
+        match oversized {
+            Some((name, _)) => Err(format!("{name} is longer than {SHORT_STRING_LIMIT} bytes")),
+            None => Ok(arguments),
         }
     }
 
@@ -202,6 +230,9 @@ struct RabbitSession<'a> {
     connection: Connection,
     channel: Channel,
     deliveries: Option<mpsc::UnboundedReceiver<ConsumerMessage>>,
+    signals: mpsc::UnboundedReceiver<BrokerSignal>,
+    acknowledgements: Acknowledgements,
+    outbox: Outbox,
 }
 
 impl Session for RabbitSession<'_> {
@@ -229,16 +260,25 @@ impl RabbitSession<'_> {
         loop {
             tokio::select! {
                 _ = context.cancel.cancelled() => return Ok(()),
+                signal = self.signals.recv() => match signal {
+                    Some(signal) => self.handle_signal(signal, context).await?,
+                    None => return Err(broker_error("channel to broker lost")),
+                },
                 _ = &mut network_failure => return Err(broker_error("connection to broker lost")),
+                settlement = self.acknowledgements.next() => {
+                    if !self.settle(settlement, context).await? {
+                        return Ok(());
+                    }
+                }
                 delivery = next_delivery(&mut self.deliveries) => match delivery {
                     Some(message) => {
-                        if !self.forward(message, context).await? {
+                        if !self.forward(message, context).await {
                             return Ok(());
                         }
                     }
-                    None => return Err(broker_error("broker cancelled the consumer")),
+                    None => return Err(self.consumer_end_error()),
                 },
-                outgoing = writes.recv() => match outgoing {
+                outgoing = writes.recv(), if !self.outbox.is_full() => match outgoing {
                     Some(request) => self.publish(request).await?,
                     None => return Ok(()),
                 },
@@ -246,31 +286,98 @@ impl RabbitSession<'_> {
         }
     }
 
-    async fn forward(&self, message: ConsumerMessage, context: &Context) -> io::Result<bool> {
-        let content = Bytes::from(message.content.unwrap_or_default());
-        let forwarded = context.forward(content).await;
-        if let Some(deliver) = message.deliver {
-            self.channel
-                .basic_ack(BasicAckArguments::new(deliver.delivery_tag(), false))
-                .await
-                .map_err(io::Error::other)?;
+    fn consumer_end_error(&mut self) -> io::Error {
+        while let Ok(signal) = self.signals.try_recv() {
+            if let BrokerSignal::ChannelClosed { reason } = signal {
+                return channel_closed_error(&reason);
+            }
         }
-        Ok(forwarded)
+        broker_error("broker cancelled the consumer")
     }
 
-    async fn publish(&self, request: WriteRequest) -> io::Result<()> {
+    async fn forward(&mut self, message: ConsumerMessage, context: &Context) -> bool {
+        let content = Bytes::from(message.content.unwrap_or_default());
+        let Some(confirmation) = context.forward_confirmed(content.clone()).await else {
+            return false;
+        };
+        if let Some(deliver) = message.deliver {
+            let held = Held {
+                delivery_tag: deliver.delivery_tag(),
+                content,
+            };
+            self.acknowledgements.track(held, confirmation);
+        }
+        true
+    }
+
+    async fn settle(&mut self, settlement: Settlement, context: &Context) -> io::Result<bool> {
+        match settlement {
+            Settlement::Acknowledge(delivery_tag) => {
+                self.channel
+                    .basic_ack(BasicAckArguments::new(delivery_tag, false))
+                    .await
+                    .map_err(io::Error::other)?;
+            }
+            Settlement::Retry(deliveries) => {
+                for held in deliveries {
+                    let Some(confirmation) = context.retry_confirmed(held.content.clone()).await
+                    else {
+                        return Ok(false);
+                    };
+                    self.acknowledgements.track(held, confirmation);
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    async fn publish(&mut self, request: WriteRequest) -> io::Result<()> {
         if !self.config.publishes() {
             request.unavailable("no exchange or routing key to publish to".into());
             return Ok(());
         }
-        let arguments = BasicPublishArguments::new(&self.config.exchange, &self.config.routing_key);
+        let arguments = BasicPublishArguments::new(&self.config.exchange, &self.config.routing_key)
+            .mandatory(true)
+            .finish();
+        let content = request.bytes.to_vec();
+        let mut properties = self.config.properties();
+        self.outbox.track(request, &mut properties);
         self.channel
-            .basic_publish(self.config.properties(), request.bytes.to_vec(), arguments)
+            .basic_publish(properties, content, arguments)
             .await
-            .map_err(io::Error::other)?;
-        request.delivered();
+            .map_err(io::Error::other)
+    }
+
+    async fn handle_signal(&mut self, signal: BrokerSignal, context: &Context) -> io::Result<()> {
+        match signal {
+            BrokerSignal::Confirmed {
+                sequence,
+                multiple,
+                accepted,
+            } => {
+                let requests = self.outbox.take_confirmed(sequence, multiple);
+                if accepted {
+                    requests.iter().for_each(WriteRequest::delivered);
+                } else {
+                    for request in requests {
+                        reject(request, "broker rejected the publish".into(), context).await;
+                    }
+                }
+            }
+            BrokerSignal::Returned { sequence, reason } => {
+                if let Some(request) = self.outbox.take(sequence) {
+                    reject(request, reason, context).await;
+                }
+            }
+            BrokerSignal::ChannelClosed { reason } => return Err(channel_closed_error(&reason)),
+        }
         Ok(())
     }
+}
+
+async fn reject(request: WriteRequest, reason: String, context: &Context) {
+    context.report_error(&reason).await;
+    request.unavailable(reason);
 }
 
 async fn next_delivery(
@@ -286,27 +393,47 @@ fn broker_error(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::ConnectionAborted, message.to_string())
 }
 
+fn channel_closed_error(reason: &str) -> io::Error {
+    broker_error(&format!("broker closed the channel: {reason}"))
+}
+
 pub(crate) async fn run(config: RabbitMqConfig, link: Link) {
+    let arguments = match config.connection_arguments() {
+        Ok(arguments) => arguments,
+        Err(reason) => return link.context.report_error(reason).await,
+    };
     let reconnect_delay = Duration::from_millis(config.reconnect_delay_ms);
     run_session_client(config.display_target(), link, reconnect_delay, || async {
         let limit = Duration::from_millis(config.connect_timeout_ms);
-        timeout(limit, open_session(&config))
+        timeout(limit, open_session(&config, &arguments))
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "connect timed out"))?
     })
     .await;
 }
 
-async fn open_session(config: &RabbitMqConfig) -> io::Result<RabbitSession<'_>> {
-    let arguments = OpenConnectionArguments::try_from(config.url.as_str())
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
-    let connection = Connection::open(&arguments)
+async fn open_session<'a>(
+    config: &'a RabbitMqConfig,
+    arguments: &OpenConnectionArguments,
+) -> io::Result<RabbitSession<'a>> {
+    let connection = Connection::open(arguments)
         .await
         .map_err(io::Error::other)?;
     let channel = connection
         .open_channel(None)
         .await
         .map_err(io::Error::other)?;
+    let (callbacks, signals) = BrokerCallbacks::channel();
+    channel
+        .register_callback(callbacks)
+        .await
+        .map_err(io::Error::other)?;
+    if config.publishes() {
+        channel
+            .confirm_select(ConfirmSelectArguments::default())
+            .await
+            .map_err(io::Error::other)?;
+    }
     let deliveries = prepare_topology(config, &channel)
         .await
         .map_err(io::Error::other)?;
@@ -315,6 +442,9 @@ async fn open_session(config: &RabbitMqConfig) -> io::Result<RabbitSession<'_>> 
         connection,
         channel,
         deliveries,
+        signals,
+        acknowledgements: Acknowledgements::new(Duration::from_millis(config.reconnect_delay_ms)),
+        outbox: Outbox::default(),
     })
 }
 
@@ -387,6 +517,27 @@ mod tests {
         for key in ["x-queue-type", "x-message-ttl", "x-dead-letter-exchange"] {
             assert!(keys.contains(&key.to_string()), "{key}");
         }
+    }
+
+    #[test]
+    fn short_string_fields_are_limited_to_255_bytes() {
+        let mut config = RabbitMqConfig::new("amqp://h".into());
+        config.routing_key = "k".repeat(255);
+        assert!(config.connection_arguments().is_ok());
+        let fields: [fn(&mut RabbitMqConfig, String); 5] = [
+            |config, value| config.exchange = value,
+            |config, value| config.routing_key = value,
+            |config, value| config.queue = Some(value),
+            |config, value| config.binding_key = Some(value),
+            |config, value| config.content_type = Some(value),
+        ];
+        for set in fields {
+            let mut config = RabbitMqConfig::new("amqp://h".into());
+            set(&mut config, "é".repeat(128));
+            assert!(config.connection_arguments().is_err());
+        }
+        let long_host = RabbitMqConfig::new(format!("amqp://h/{}", "v".repeat(256)));
+        assert!(long_host.connection_arguments().is_err());
     }
 
     #[test]
