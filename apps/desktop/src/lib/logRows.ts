@@ -1,6 +1,6 @@
 import { describeConnectionState } from "@/lib/sideStatus";
 import { formatBytes, formatInteger, hexString, printableAscii } from "@/lib/format";
-import type { DroppedEvent, Origin, RiftEvent, SideName, SkippedEvent } from "@/lib/types";
+import type { DroppedEvent, Origin, RiftEvent, SideName, SkippedEvent, WorkflowEvent } from "@/lib/types";
 
 export type LogDirection = "A" | "B" | "AB" | "BA";
 export type LogLevel = "ok" | "warn" | "err";
@@ -46,7 +46,7 @@ const skippedText = (event: SkippedEvent) => {
   return `${route}: ${chunkCount(event.chunks)} (${formatBytes(event.length)}) not shown, too fast to display`;
 };
 
-export const rowFromEvent = (event: RiftEvent): LogRow => {
+export const rowFromEvent = (event: Exclude<RiftEvent, WorkflowEvent>): LogRow => {
   const time = Date.parse(event.timestamp);
   if (event.type === "dropped") return statusRow(event.side, "warn", droppedText(event), time);
   if (event.type === "skipped") return statusRow(null, "warn", skippedText(event), time);

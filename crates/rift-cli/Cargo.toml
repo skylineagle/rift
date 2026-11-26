@@ -26,5 +26,5 @@ sha2 = "0.11.1"
 tar = "0.4.46"
 tempfile.workspace = true
 tokio.workspace = true
-ureq = { version = "3", features = ["json"] }
+ureq.workspace = true
 zip = { version = "9.6.1", default-features = false, features = ["deflate"] }

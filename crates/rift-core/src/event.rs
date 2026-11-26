@@ -32,6 +32,16 @@ impl fmt::Display for ConnectionState {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case")]
+pub enum WorkflowState {
+    Started,
+    Step { cycle: u32, step: usize },
+    Finished,
+    Stopped,
+    Failed { message: String },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Hash, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Origin {
@@ -68,6 +78,12 @@ pub enum Event {
         peer: Option<String>,
         chunks: u64,
     },
+    Workflow {
+        profile: String,
+        timestamp: DateTime<Utc>,
+        workflow: String,
+        state: WorkflowState,
+    },
 }
 
 impl Event {
@@ -98,6 +114,15 @@ impl Event {
             side,
             peer,
             chunks,
+        }
+    }
+
+    pub fn workflow(profile: &str, workflow: &str, state: WorkflowState) -> Self {
+        Event::Workflow {
+            profile: profile.to_string(),
+            timestamp: Utc::now(),
+            workflow: workflow.to_string(),
+            state,
         }
     }
 

@@ -1,22 +1,28 @@
 use std::fs;
 use std::path::Path;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::side_config::SideConfig;
+use crate::workflow::Workflow;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Profile {
     pub name: String,
     pub a: SideConfig,
     pub b: SideConfig,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workflows: Vec<Workflow>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProfileStore {
     #[serde(rename = "profile", default)]
     profiles: Vec<Profile>,
+    #[serde(flatten)]
+    other_sections: toml::Table,
 }
 
 impl ProfileStore {
@@ -37,6 +43,19 @@ impl ProfileStore {
             fs::create_dir_all(parent)?;
         }
         fs::write(path, toml::to_string_pretty(self)?)?;
+        Ok(())
+    }
+
+    pub fn section<T: DeserializeOwned + Default>(&self, name: &str) -> Result<T> {
+        match self.other_sections.get(name) {
+            Some(section) => Ok(section.clone().try_into()?),
+            None => Ok(T::default()),
+        }
+    }
+
+    pub fn set_section<T: Serialize>(&mut self, name: &str, value: &T) -> Result<()> {
+        self.other_sections
+            .insert(name.to_string(), toml::Value::try_from(value)?);
         Ok(())
     }
 
@@ -169,6 +188,7 @@ b = { kind = "udp-server", bind = "0.0.0.0:2", enabled = false }
                 name: "gps".into(),
                 a: "tcp-server://0.0.0.0:9000".parse().unwrap(),
                 b: "uart:///dev/ttyUSB0?baud=9600&parity=even".parse().unwrap(),
+                workflows: Vec::new(),
             })
             .unwrap();
         store
@@ -176,6 +196,7 @@ b = { kind = "udp-server", bind = "0.0.0.0:2", enabled = false }
                 name: "udp".into(),
                 a: "udp://127.0.0.1:7000?bind=0.0.0.0:7001".parse().unwrap(),
                 b: "tcp://localhost:9".parse().unwrap(),
+                workflows: Vec::new(),
             })
             .unwrap();
         store.save(&path).unwrap();
@@ -228,5 +249,56 @@ b = { kind = "udp-server", bind = "0.0.0.0:2", enabled = false }
         assert!(store.remove("missing").is_err());
         store.remove("gps").unwrap();
         assert!(store.list().is_empty());
+    }
+
+    #[test]
+    fn keeps_unknown_sections_and_workflows_across_load_and_save() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("rift.toml");
+        let content = r#"
+[[profile]]
+name = "gps"
+a = { kind = "tcp-client", address = "h:1" }
+b = { kind = "tcp-client", address = "h:2" }
+
+[[profile.workflows]]
+name = "heartbeat"
+autostart = true
+repeat = 10
+steps = [
+  { action = "send", target = "Both", format = "text", payload = "PING\\r\\n" },
+  { action = "wait", millis = 1000 },
+]
+
+[logging]
+level = "debug"
+
+[logging.http]
+enabled = true
+headers = { Authorization = "ApiKey xyz" }
+"#;
+        fs::write(&path, content).unwrap();
+        let store = ProfileStore::load(&path).unwrap();
+        assert_eq!(store.get("gps").unwrap().workflows[0].steps.len(), 2);
+        store.save(&path).unwrap();
+        assert_eq!(ProfileStore::load(&path).unwrap(), store);
+        let original: toml::Table = toml::from_str(content).unwrap();
+        let saved: toml::Table = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["logging"], original["logging"]);
+        assert_eq!(
+            saved["profile"][0]["workflows"],
+            original["profile"][0]["workflows"]
+        );
+    }
+
+    #[test]
+    fn sections_default_when_absent_and_can_be_replaced() {
+        let mut store: ProfileStore = toml::from_str(EXAMPLE).unwrap();
+        assert!(store.section::<toml::Table>("logging").unwrap().is_empty());
+        let mut logging = toml::Table::new();
+        logging.insert("level".into(), "warn".into());
+        store.set_section("logging", &logging).unwrap();
+        assert_eq!(store.section::<toml::Table>("logging").unwrap(), logging);
+        assert!(store.section::<Vec<String>>("logging").is_err());
     }
 }

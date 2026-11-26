@@ -7,3 +7,40 @@ b = { kind = "uart", port = "/dev/ttyUSB0", baud_rate = 9600 }
 name = "relay"
 a = { kind = "udp-server", bind = "0.0.0.0:5000" }
 b = { kind = "tcp-client", address = "example.com:7000", enabled = false }
+
+# Workflows belong to the [[profile]] table above them.
+# [[profile.workflows]]
+# name = "heartbeat"
+# autostart = true          # default false: start together with the profile
+# repeat = 10               # omit to loop forever (then a wait above 0 ms is required)
+# steps = [
+#   { action = "send", target = "Both", format = "text", payload = "PING\\r\\n" },
+#   { action = "wait", millis = 1000 },
+# ]
+
+# Logging is off until a sink is enabled.
+# [logging]
+# level = "info"              # debug | info | warn | error
+# stats_interval_secs = 60    # 0 = no stats
+#
+# [logging.console]
+# enabled = true
+# format = "text"             # text | json, written to stderr
+#
+# [logging.file]
+# enabled = true
+# directory = "/var/log/rift" # omit for <OS local data dir>/rift/logs
+# file_name = "rift.log"
+# rotate = "size"             # size | hourly | daily
+# max_file_bytes = 10485760   # used by rotate = "size"
+# max_files = 10              # rotated files kept, 0 = unlimited
+# max_total_bytes = 104857600 # optional cap across all log files
+#
+# [logging.http]
+# enabled = false
+# url = "http://localhost:8080"
+# format = "ndjson"           # ndjson | json-array
+# batch_size = 100
+# flush_interval_secs = 5
+# timeout_secs = 10
+# headers = { Authorization = "ApiKey xyz" }

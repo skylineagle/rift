@@ -139,6 +139,63 @@ While running, stdin lines inject data: `[profile:]<a|b|both> <text|hex|bin|file
 e.g. `a hex de ad be ef`, `gps:both text hello\r\n`, `b file ./frame.bin`.
 Switch a side at runtime with `[profile:]<a|b> <on|off>`, e.g. `b off`, `gps:a on`.
 
+### Injecting from another terminal
+
+`rift inject` and `rift workflow` talk to a Rift that is already running on the same machine (`rift run`, `rift pipe` or the desktop app).
+
+```sh
+rift inject gps a text 'PING\r\n'                      # <profile> <a|b|both> <text|hex|bin|file> <payload...>
+rift inject gps both hex de ad be ef
+rift inject gps b file ./frame.bin
+rift inject gps a text PING --every 500ms              # repeat until stopped
+rift inject gps a text PING --every 1.5s --count 10    # repeat 10 times
+rift workflow stop gps cli-inject                      # stop a repeating inject
+```
+
+Payload words are joined by one space. Put `--` before a payload that starts with `-`.
+`--every` takes `ms`, `s` or `m` and runs as a workflow named `cli-inject`, one at a time per profile.
+
+### Workflows
+
+A workflow is a named list of `send` and `wait` steps saved with a profile:
+
+```toml
+[[profile]]
+name = "gps"
+a = { kind = "tcp-server", bind = "0.0.0.0:9000" }
+b = { kind = "uart", port = "/dev/ttyUSB0", baud_rate = 9600 }
+
+[[profile.workflows]]
+name = "heartbeat"
+autostart = true   # default false: start together with the profile
+repeat = 10        # omit to loop forever
+steps = [
+  { action = "send", target = "Both", format = "text", payload = "PING\\r\\n" },
+  { action = "wait", millis = 1000 },
+]
+```
+
+```sh
+rift workflow list [-c file]          # workflows saved in the config
+rift workflow start gps heartbeat
+rift workflow stop gps heartbeat
+rift workflow status                  # running instances, their profiles and workflows
+```
+
+### Logging
+
+Structured logs (profile and connection changes, drops, workflows, periodic traffic stats) are configured by the `[logging]`
+section of the config file, with `console` (stderr), `file` (rotating) and `http` (NDJSON or JSON array) sinks.
+All sinks are off by default. See [`examples/rift.toml`](examples/rift.toml) for every key.
+
+```toml
+[logging.file]
+enabled = true
+directory = "/var/log/rift"
+```
+
+`run`, `pipe` and `profile add|remove` use it. `pipe` reads it from the resolved config path (or `-c`) when that file exists.
+
 ## Agent skills
 
 Skills that teach AI agents to run pipes and manage profiles live in [`skills/`](skills):

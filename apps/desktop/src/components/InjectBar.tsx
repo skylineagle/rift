@@ -1,5 +1,5 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { ArrowLeftRight, File, Send } from "lucide-react";
+import { File, Send } from "lucide-react";
 import { useRef, useState, type FC } from "react";
 import { toast } from "@yusufceng1z/ding-react";
 
@@ -11,10 +11,13 @@ import {
 import { SegmentedControl } from "@/components/SegmentedControl";
 import { SelectField } from "@/components/SelectField";
 import { TooltipButton } from "@/components/TooltipButton";
+import { WorkflowRunningChip } from "@/components/WorkflowRunningChip";
+import { WorkflowToggleButton } from "@/components/WorkflowToggleButton";
 import { useIsRunning } from "@/hooks/useBridge";
 import { useStore } from "@/hooks/useStore";
 import { errorMessage } from "@/lib/format";
 import { FORMAT_OPTIONS, PLACEHOLDERS, fileName } from "@/lib/injection";
+import { targetItems } from "@/lib/targetItems";
 import * as api from "@/lib/tauriApi";
 import type { PayloadFormat, Target } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -27,15 +30,7 @@ import {
 
 export type InjectBarProps = { profileName: string };
 
-const TARGET_ITEMS = [
-  { value: "A" as const, label: "A", tip: "Inject into A" },
-  {
-    value: "Both" as const,
-    label: <ArrowLeftRight className="size-[13px]" />,
-    tip: "Inject into both",
-  },
-  { value: "B" as const, label: "B", tip: "Inject into B" },
-];
+const TARGET_ITEMS = targetItems("Inject into");
 
 const EMPTY_PREVIEW: InjectPreviewResult = { bytes: [], error: null };
 
@@ -170,6 +165,9 @@ export const InjectBar: FC<InjectBarProps> = ({ profileName }) => {
       >
         <Send />
       </TooltipButton>
+      <span aria-hidden="true" className="mx-0.5 h-4 w-px bg-line-2" />
+      <WorkflowRunningChip profileName={profileName} />
+      <WorkflowToggleButton />
     </div>
   );
 };

@@ -2,6 +2,7 @@ import { Copy, Trash2 } from "lucide-react";
 import { useRef, useState, type FC } from "react";
 
 import { StatusDot } from "@/components/StatusDot";
+import { WorkflowRunningBadge } from "@/components/WorkflowRunningBadge";
 import { useIsRunning, useOverallStatus } from "@/hooks/useBridge";
 import { cn } from "@/lib/utils";
 import { deleteProfile, duplicateProfile, renameProfile, selectProfile } from "@/stores/profilesStore";
@@ -32,9 +33,12 @@ export const ProfileRow: FC<ProfileRowProps> = ({ name, selected }) => {
         className="min-w-0 rounded border border-accent-line bg-surface px-1 text-[13px] outline-none" /> :
         <b className="truncate text-[13px] font-medium" title={running ? "Stop the bridge to rename it" : "Double-click to rename"}
           onDoubleClick={(event) => { event.stopPropagation(); if (!running) { setDraft(name); setEditing(true); } }}>{name}</b>}
-      <span className="flex opacity-0 group-hover:opacity-100 group-focus-within:opacity-100">
+      <span className="grid items-center justify-items-end">
+        <span className="col-start-1 row-start-1 flex"><WorkflowRunningBadge profileName={name} /></span>
+        <span className="col-start-1 row-start-1 flex opacity-0 group-hover:opacity-100 group-focus-within:opacity-100">
         <button aria-label={`Copy ${name}`} title="Copy profile" className="p-1 text-fg-3 hover:text-fg" onClick={(event) => { event.stopPropagation(); void duplicateProfile(name); }}><Copy className="size-3.5" /></button>
         <button aria-label={`Delete ${name}`} title="Delete profile" className="p-1 text-fg-3 hover:text-err" onClick={(event) => { event.stopPropagation(); void deleteProfile(name); }}><Trash2 className="size-3.5" /></button>
+        </span>
       </span>
     </div>
   );

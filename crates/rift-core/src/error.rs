@@ -14,6 +14,16 @@ pub enum Error {
     NotRunning(String),
     #[error("profile `{0}` is already running")]
     AlreadyRunning(String),
+    #[error("invalid workflow: {0}")]
+    InvalidWorkflow(String),
+    #[error("workflow `{0}` not found")]
+    WorkflowNotFound(String),
+    #[error("workflow `{0}` is already running")]
+    WorkflowRunning(String),
+    #[error("workflow `{0}` is not running")]
+    WorkflowNotRunning(String),
+    #[error("{0}")]
+    Control(String),
     #[error("cannot determine the config directory, pass --config")]
     ConfigDirectoryUnavailable,
     #[error(transparent)]

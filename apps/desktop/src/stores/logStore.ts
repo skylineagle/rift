@@ -47,6 +47,7 @@ subscribeToBatches((events, lagged) => {
     });
   }
   events.forEach((event) => {
+    if (event.type === "workflow") return;
     (additions[event.profile] ??= []).push(rowFromEvent(event));
   });
   appendRows(additions);

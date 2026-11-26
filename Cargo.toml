@@ -22,4 +22,5 @@ tokio = { version = "1", features = ["full"] }
 tokio-serial = "5"
 tokio-util = "0.7"
 toml = "0.8"
+ureq = { version = "3", features = ["json"] }
 rift-core = { package = "rift-bridge-core", path = "crates/rift-core", version = "0.2.1" }

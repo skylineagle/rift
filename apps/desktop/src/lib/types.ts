@@ -51,7 +51,65 @@ export type Endpoint =
 
 export type EndpointKind = Endpoint["kind"];
 
-export type Profile = { name: string; a: Endpoint; b: Endpoint };
+export type WorkflowStep =
+  | { action: "send"; target: Target; format: PayloadFormat; payload: string }
+  | { action: "wait"; millis: number };
+
+export type Workflow = {
+  name: string;
+  autostart: boolean;
+  repeat?: number;
+  steps: WorkflowStep[];
+};
+
+export type WorkflowStatus = {
+  profile: string;
+  workflow: string;
+  cycle: number;
+  step: number;
+};
+
+export type LogLevel = "debug" | "info" | "warn" | "error";
+export type ConsoleFormat = "text" | "json";
+export type RotationPolicy = "size" | "hourly" | "daily";
+export type HttpFormat = "ndjson" | "json-array";
+
+export type ConsoleSinkConfig = { enabled: boolean; format: ConsoleFormat };
+
+export type FileSinkConfig = {
+  enabled: boolean;
+  directory?: string;
+  file_name: string;
+  rotate: RotationPolicy;
+  max_file_bytes: number;
+  max_files: number;
+  max_total_bytes?: number;
+};
+
+export type HttpSinkConfig = {
+  enabled: boolean;
+  url: string;
+  format: HttpFormat;
+  batch_size: number;
+  flush_interval_secs: number;
+  timeout_secs: number;
+  headers: Record<string, string>;
+};
+
+export type LoggingConfig = {
+  level: LogLevel;
+  stats_interval_secs: number;
+  console: ConsoleSinkConfig;
+  file: FileSinkConfig;
+  http: HttpSinkConfig;
+};
+
+export type Profile = {
+  name: string;
+  a: Endpoint;
+  b: Endpoint;
+  workflows?: Workflow[];
+};
 
 export type ConnectionState =
   | { state: "disabled" }
@@ -103,7 +161,22 @@ export type SkippedEvent = {
   length: number;
 };
 
-export type RiftEvent = DataEvent | StatusEvent | DroppedEvent | SkippedEvent;
+export type WorkflowState =
+  | { state: "started" }
+  | { state: "step"; cycle: number; step: number }
+  | { state: "finished" }
+  | { state: "stopped" }
+  | { state: "failed"; message: string };
+
+export type WorkflowEvent = {
+  type: "workflow";
+  profile: string;
+  timestamp: string;
+  workflow: string;
+  state: WorkflowState;
+};
+
+export type RiftEvent = DataEvent | StatusEvent | DroppedEvent | SkippedEvent | WorkflowEvent;
 
 export type SideStatus = { state: ConnectionState; peers: number };
 export type BridgeStatus = { profile: string; a: SideStatus; b: SideStatus };

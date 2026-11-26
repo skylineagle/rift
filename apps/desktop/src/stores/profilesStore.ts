@@ -5,7 +5,7 @@ import { defaultEndpoint, switchEndpointKind } from "@/lib/endpointKinds";
 import { errorMessage } from "@/lib/format";
 import { statusRow } from "@/lib/logRows";
 import * as api from "@/lib/tauriApi";
-import type { Endpoint, EndpointKind, Profile, SideName } from "@/lib/types";
+import type { Endpoint, EndpointKind, Profile, SideName, Workflow } from "@/lib/types";
 import { markRunning, markStopped, pauseSide, resumeSide, bridgeStore } from "@/stores/bridgeStore";
 import { appendLocalRow } from "@/stores/logStore";
 
@@ -245,6 +245,22 @@ export const changeEndpointKind = (name: string, side: SideName, kind: EndpointK
   if (!profile) return;
   const current = side === "A" ? profile.a : profile.b;
   updateEndpoint(name, side, switchEndpointKind(current, kind));
+};
+
+export const saveWorkflows = async (name: string, workflows: Workflow[]) => {
+  const profile = findProfile(name);
+  if (!profile) return false;
+  const next = { ...profile, workflows };
+  replaceProfile(name, next);
+  try {
+    await persistNow(next);
+    return true;
+  } catch (error) {
+    const latest = findProfile(name);
+    if (latest) replaceProfile(name, { ...latest, workflows: profile.workflows });
+    reportError(error);
+    return false;
+  }
 };
 
 export const renameProfile = async (name: string, nextName: string) => {
