@@ -1,0 +1,131 @@
+name: Bench
+
+on:
+  pull_request:
+
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  cli:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            bench -> target
+      - run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
+      - run: cargo build --release --manifest-path bench/Cargo.toml
+      - name: Build head
+        run: |
+          cargo build --release -p rift-cli
+          mkdir -p binaries
+          cp target/release/rift binaries/head
+      - name: Build base
+        id: base
+        if: hashFiles('base/crates/rift-cli/Cargo.toml') != ''
+        run: |
+          find base -type f -not -path 'base/.git/*' -exec touch {} +
+          CARGO_TARGET_DIR="$PWD/target" cargo build --release -p rift-cli --manifest-path base/Cargo.toml
+          cp target/release/rift binaries/base
+          echo "rift=binaries/base" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/bench-compare
+        with:
+          shape: cli
+          option: --rift
+          base: ${{ steps.base.outputs.rift }}
+          head: binaries/head
+
+  desktop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            bench -> target
+      - run: sudo apt-get update && sudo apt-get install -y libudev-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - run: cargo build --release --manifest-path bench/Cargo.toml
+      - name: Build head
+        run: |
+          mkdir -p apps/desktop/dist binaries
+          touch apps/desktop/dist/index.html
+          cargo build --release -p rift-desktop --example headless
+          cp target/release/examples/headless binaries/head
+      - name: Build base
+        id: base
+        if: hashFiles('base/apps/desktop/src-tauri/examples/headless.rs') != ''
+        run: |
+          mkdir -p base/apps/desktop/dist
+          touch base/apps/desktop/dist/index.html
+          find base -type f -not -path 'base/.git/*' -exec touch {} +
+          CARGO_TARGET_DIR="$PWD/target" cargo build --release -p rift-desktop --example headless --manifest-path base/Cargo.toml
+          cp target/release/examples/headless binaries/base
+          echo "rift=binaries/base" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/bench-compare
+        with:
+          shape: desktop
+          option: --rift
+          base: ${{ steps.base.outputs.rift }}
+          head: binaries/head
+
+  container:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+      - uses: docker/setup-buildx-action@v3
+      - name: Build head image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: rift-bench:head
+          cache-from: type=gha,scope=bench-head
+          cache-to: type=gha,scope=bench-head,mode=max
+      - name: Build base image
+        if: hashFiles('base/Dockerfile') != ''
+        uses: docker/build-push-action@v6
+        with:
+          context: base
+          load: true
+          tags: rift-bench:base
+          cache-from: type=gha,scope=bench-base
+          cache-to: type=gha,scope=bench-base,mode=max
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bench -> target
+      - run: cargo build --release --manifest-path bench/Cargo.toml
+      - uses: ./.github/actions/bench-compare
+        with:
+          shape: container
+          option: --rift-command
+          base: ${{ hashFiles('base/Dockerfile') != '' && 'docker run --rm --network host --env RIFT_NO_UPDATE_CHECK=1 rift-bench:base' || '' }}
+          head: docker run --rm --network host --env RIFT_NO_UPDATE_CHECK=1 rift-bench:head

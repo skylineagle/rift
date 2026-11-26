@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -23,6 +23,41 @@ pub fn side_key(profile: &str, side: &str) -> String {
     format!("{profile}:{side}")
 }
 
+#[derive(Debug, Clone)]
+pub struct RiftCommand {
+    program: PathBuf,
+    prefix: Vec<String>,
+    pub measurable: bool,
+}
+
+impl RiftCommand {
+    pub fn binary(path: &Path) -> Result<Self> {
+        let program = std::fs::canonicalize(path)
+            .with_context(|| format!("rift binary {}", path.display()))?;
+        Ok(Self {
+            program,
+            prefix: Vec::new(),
+            measurable: true,
+        })
+    }
+
+    pub fn wrapped(line: &str) -> Result<Self> {
+        let mut words = line.split_whitespace().map(str::to_string);
+        let program = words.next().context("rift command is empty")?;
+        Ok(Self {
+            program: program.into(),
+            prefix: words.collect(),
+            measurable: false,
+        })
+    }
+
+    fn command(&self) -> Command {
+        let mut command = Command::new(&self.program);
+        command.args(&self.prefix);
+        command
+    }
+}
+
 pub struct RiftProcess {
     child: Child,
     pub pid: i32,
@@ -37,15 +72,17 @@ pub enum Output {
 }
 
 impl RiftProcess {
-    pub fn spawn(binary: &Path, arguments: &[String], output: Output) -> Result<Self> {
-        let mut command = Command::new(binary);
+    pub fn spawn(rift: &RiftCommand, arguments: &[String], output: Output) -> Result<Self> {
+        let mut command = rift.command();
         command
             .args(arguments)
             .env("RIFT_NO_UPDATE_CHECK", "1")
             .stdin(Stdio::null())
             .stderr(Stdio::null());
         match output {
-            Output::Parsed => command.args(["--log", "json", "--quiet"]).stdout(Stdio::piped()),
+            Output::Parsed => command
+                .args(["--log", "json", "--quiet"])
+                .stdout(Stdio::piped()),
             Output::Discarded(format) => command.args(["--log", format]).stdout(Stdio::null()),
             Output::Silent => command.arg("--quiet").stdout(Stdio::null()),
         };
@@ -66,7 +103,11 @@ impl RiftProcess {
         })
     }
 
-    pub fn wait_for(&self, timeout: Duration, ready: impl Fn(&HashMap<String, SideLog>) -> bool) -> bool {
+    pub fn wait_for(
+        &self,
+        timeout: Duration,
+        ready: impl Fn(&HashMap<String, SideLog>) -> bool,
+    ) -> bool {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             if ready(&self.log.lock().unwrap()) {

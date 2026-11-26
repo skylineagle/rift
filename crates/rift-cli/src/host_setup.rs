@@ -17,7 +17,11 @@ pub struct Host {
 impl Host {
     pub fn new(logging: LoggingConfig) -> Self {
         let rift = Arc::new(Rift::with_logger(Logger::new(logging)));
-        tokio::spawn(rift.logger().clone().watch(rift.subscribe()));
+        tokio::spawn(
+            rift.logger()
+                .clone()
+                .watch(rift.subscribe_lifecycle(), rift.traffic_registry()),
+        );
         Self {
             workflows: Arc::new(Workflows::new(rift.clone())),
             rift,

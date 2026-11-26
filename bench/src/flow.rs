@@ -142,7 +142,11 @@ impl Flow {
             sent_frames: sent,
             received_frames: received,
             lost_frames: lost,
-            loss_pct: if sent == 0 { 0.0 } else { lost as f64 / sent as f64 * 100.0 },
+            loss_pct: if sent == 0 {
+                0.0
+            } else {
+                lost as f64 / sent as f64 * 100.0
+            },
             out_of_order: stats.out_of_order,
             corrupt_frames: stats.corrupt_frames,
             garbage_bytes: stats.garbage_bytes,
@@ -230,7 +234,12 @@ fn run_sender(mut channel: Channel, plan: SendPlan, counters: &SendCounters, sto
     counters.stopped_ns.store(now_ns(), Ordering::Relaxed);
 }
 
-fn run_receiver(mut channel: Channel, frame_size: usize, stats: &Mutex<FlowStats>, stop: &AtomicBool) {
+fn run_receiver(
+    mut channel: Channel,
+    frame_size: usize,
+    stats: &Mutex<FlowStats>,
+    stop: &AtomicBool,
+) {
     let mut buffer = vec![0u8; RECEIVE_BUFFER];
     let mut scanner = Scanner::new(frame_size);
     let mut frames = Vec::with_capacity(1024);

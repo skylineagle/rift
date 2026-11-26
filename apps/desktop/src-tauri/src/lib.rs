@@ -4,15 +4,16 @@ mod cli_link;
 mod commands;
 mod event_batch;
 mod event_forwarder;
+pub mod headless;
 mod logging_commands;
 mod profile_lifecycle;
 mod profile_logging;
+mod runtime;
 mod workflow_commands;
 
 use tauri::{Manager, RunEvent};
 
 use app_state::AppState;
-use event_forwarder::EventSink;
 
 pub fn run() {
     tauri::Builder::default()
@@ -24,11 +25,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             cli_link::link_bundled_cli();
             let state = AppState::load()?;
-            let logger = state.rift.logger().clone();
-            tauri::async_runtime::spawn(logger.watch(state.rift.subscribe()));
-            tauri::async_runtime::block_on(async { state.start_control_server() });
-            let sink = EventSink::default();
-            event_forwarder::forward_events(sink.clone(), state.rift.subscribe());
+            let sink = runtime::start(&state);
             app.manage(state);
             app.manage(sink);
             Ok(())

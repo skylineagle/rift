@@ -158,7 +158,13 @@ pub fn summarize(samples: &[Sample], from_ns: u64, to_ns: u64) -> Usage {
         .fold(0.0, f64::max);
     Usage {
         rss_start_mb: megabytes(samples.first().map_or(0, |sample| sample.rss_bytes)),
-        rss_peak_mb: megabytes(window.iter().map(|sample| sample.rss_bytes).max().unwrap_or(0)),
+        rss_peak_mb: megabytes(
+            window
+                .iter()
+                .map(|sample| sample.rss_bytes)
+                .max()
+                .unwrap_or(0),
+        ),
         rss_end_mb: megabytes(last.rss_bytes),
         cpu_avg_pct: cpu_percent(first, last),
         cpu_peak_pct: peak_cpu,

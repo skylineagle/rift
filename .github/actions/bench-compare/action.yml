@@ -1,0 +1,75 @@
+name: Bench compare
+description: Run the ci bench suite on base and head in alternating rounds, then compare them
+
+inputs:
+  shape:
+    description: Name of the Rift shape being measured
+    required: true
+  option:
+    description: Harness option that selects rift, either --rift or --rift-command
+    required: true
+  base:
+    description: Value of the option for the base revision, empty when base cannot be measured
+    required: false
+    default: ""
+  head:
+    description: Value of the option for the head revision
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Measure base and head in alternating rounds
+      shell: bash
+      env:
+        OPTION: ${{ inputs.option }}
+        BASE: ${{ inputs.base }}
+        HEAD: ${{ inputs.head }}
+      run: |
+        base_arguments=()
+        if [[ -n "$BASE" ]]; then
+          base_arguments=("--base-${OPTION#--}" "$BASE")
+        fi
+        bench/target/release/rift-bench "$OPTION" "$HEAD" ci --out "$RUNNER_TEMP/bench/first" --rounds 5 --seconds 2 "${base_arguments[@]}"
+    - name: Compare first pass
+      if: ${{ !cancelled() && inputs.base != '' }}
+      shell: bash
+      env:
+        SHAPE: ${{ inputs.shape }}
+      run: |
+        stage="$RUNNER_TEMP/bench/first"
+        printf '### %s, first pass\n\n' "$SHAPE" >> "$GITHUB_STEP_SUMMARY"
+        bench/target/release/rift-bench compare --base "$stage/base.json" --head "$stage/head.json" --failing-cases "$stage/failing.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+    - name: Confirm suspected regressions with fresh rounds
+      if: ${{ !cancelled() && inputs.base != '' }}
+      shell: bash
+      env:
+        SHAPE: ${{ inputs.shape }}
+        OPTION: ${{ inputs.option }}
+        BASE: ${{ inputs.base }}
+        HEAD: ${{ inputs.head }}
+      run: |
+        first="$RUNNER_TEMP/bench/first"
+        stage="$RUNNER_TEMP/bench/confirmation"
+        printf '\n### %s, confirmation\n\n' "$SHAPE" >> "$GITHUB_STEP_SUMMARY"
+        if [[ ! -s "$first/failing.txt" ]]; then
+          printf 'No case failed the first pass.\n\n' >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+        bench/target/release/rift-bench "$OPTION" "$HEAD" ci --out "$stage" --rounds 7 --seconds 2 --cases "$first/failing.txt" "--base-${OPTION#--}" "$BASE"
+        bench/target/release/rift-bench compare --base "$stage/base.json" --head "$stage/head.json" --holm | tee -a "$GITHUB_STEP_SUMMARY"
+    - name: Report skipped comparison
+      if: ${{ !cancelled() && inputs.base == '' }}
+      shell: bash
+      env:
+        SHAPE: ${{ inputs.shape }}
+      run: |
+        message="The base revision cannot run the $SHAPE shape, so the comparison was skipped."
+        echo "::notice title=Bench comparison skipped::$message"
+        printf '### %s\n\n%s\n' "$SHAPE" "$message" >> "$GITHUB_STEP_SUMMARY"
+    - uses: actions/upload-artifact@v4
+      if: ${{ !cancelled() }}
+      with:
+        name: bench-${{ inputs.shape }}
+        path: ${{ runner.temp }}/bench/
+        if-no-files-found: warn

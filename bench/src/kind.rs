@@ -29,7 +29,6 @@ impl Kind {
             Kind::Uart => "uart",
         }
     }
-
 }
 
 pub fn pairs() -> Vec<(Kind, Kind)> {

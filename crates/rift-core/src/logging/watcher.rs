@@ -6,22 +6,22 @@ use tokio::time::{Instant, MissedTickBehavior};
 use super::logger::Logger;
 use super::record::LogRecord;
 use super::stats::Statistics;
-use crate::event::{ConnectionState, Event, Origin};
+use crate::event::{ConnectionState, Event};
 use crate::side::Side;
+use crate::traffic::TrafficRegistry;
 
 const STATS_CHECK_PERIOD: Duration = Duration::from_secs(1);
 
 impl Logger {
-    pub async fn watch(self, mut events: broadcast::Receiver<Event>) {
+    pub async fn watch(self, mut lifecycle: broadcast::Receiver<Event>, traffic: TrafficRegistry) {
         let mut statistics = Statistics::default();
         let mut reported = Instant::now();
         let mut ticks = tokio::time::interval(STATS_CHECK_PERIOD);
         ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
             tokio::select! {
-                received = events.recv() => match received {
+                received = lifecycle.recv() => match received {
                     Ok(event) => {
-                        statistics.observe(&event);
                         if let Some(record) = event_record(&event) {
                             self.log(record);
                         }
@@ -31,14 +31,18 @@ impl Logger {
                 },
                 _ = ticks.tick() => match self.stats_interval() {
                     Some(interval) if reported.elapsed() >= interval => {
-                        for record in statistics.report(&self.running_profiles(), interval) {
+                        for record in statistics.report(
+                            &self.running_profiles(),
+                            traffic.snapshot(),
+                            interval,
+                        ) {
                             self.log(record);
                         }
                         reported = Instant::now();
                     }
                     Some(_) => {}
                     None => {
-                        statistics.reset();
+                        statistics.rebase(traffic.snapshot());
                         reported = Instant::now();
                     }
                 },
@@ -62,21 +66,6 @@ fn event_record(event: &Event) -> Option<LogRecord> {
             chunks,
             ..
         } => Some(dropped_record(profile, *side, peer.as_deref(), *chunks)),
-        Event::Data {
-            profile,
-            target,
-            origin: Origin::Injected,
-            bytes,
-            delivered,
-            undelivered_reason,
-            ..
-        } => Some(injected_record(
-            profile,
-            *target,
-            bytes.len(),
-            *delivered,
-            undelivered_reason.as_deref(),
-        )),
         Event::Data { .. } | Event::Workflow { .. } => None,
     }
 }
@@ -116,38 +105,12 @@ fn dropped_record(profile: &str, side: Side, peer: Option<&str>, chunks: u64) ->
     }
 }
 
-fn injected_record(
-    profile: &str,
-    target: Side,
-    bytes: usize,
-    delivered: bool,
-    undelivered_reason: Option<&str>,
-) -> LogRecord {
-    let outcome = if delivered {
-        "injected"
-    } else {
-        "could not inject"
-    };
-    let record = LogRecord::debug(
-        "data.injected",
-        format!("{profile} {target} {outcome} {bytes} bytes"),
-    )
-    .profile(profile)
-    .side(target)
-    .field("target", target)
-    .field("bytes", bytes)
-    .field("delivered", delivered);
-    match undelivered_reason {
-        Some(reason) => record.field("undelivered_reason", reason),
-        None => record,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
 
     use super::*;
+    use crate::event::Origin;
     use crate::logging::{FileSinkConfig, LogLevel, LoggingConfig};
 
     #[test]
@@ -177,15 +140,9 @@ mod tests {
     }
 
     #[test]
-    fn only_injected_data_and_drops_produce_records() {
+    fn only_drops_and_status_changes_produce_records() {
         let received = Event::data("gps", Side::A, Side::B, Origin::Received, b"x", true);
         assert!(event_record(&received).is_none());
-        let injected = Event::data("gps", Side::A, Side::B, Origin::Injected, b"xy", false);
-        let record = event_record(&injected).unwrap();
-        assert_eq!(record.event, "data.injected");
-        assert_eq!(record.fields["bytes"], 2);
-        assert_eq!(record.fields["target"], "B");
-        assert_eq!(record.fields["delivered"], false);
         let dropped = event_record(&Event::dropped("gps", Side::A, None, 4)).unwrap();
         assert_eq!(dropped.event, "data.dropped");
         assert_eq!(dropped.fields["chunks"], 4);
@@ -205,21 +162,13 @@ mod tests {
         };
         let logger = Logger::new(config.clone());
         let (events, received) = broadcast::channel(8);
-        let watcher = tokio::spawn(logger.clone().watch(received));
+        let traffic = TrafficRegistry::default();
+        let watcher = tokio::spawn(logger.clone().watch(received, traffic.clone()));
         logger.log(LogRecord::info("profile.started", "started").profile("gps"));
         tokio::time::sleep(Duration::from_secs(30)).await;
         config.stats_interval_secs = 10;
         logger.reconfigure(config);
-        events
-            .send(Event::data(
-                "gps",
-                Side::A,
-                Side::B,
-                Origin::Received,
-                b"abc",
-                true,
-            ))
-            .unwrap();
+        traffic.counters("gps").side(Side::A).record_received(3);
         tokio::time::sleep(Duration::from_millis(11_500)).await;
         drop(events);
         watcher.await.unwrap();

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
@@ -8,9 +8,11 @@ use crate::bridge::{Bridge, BridgeStatus};
 use crate::error::{Error, Result};
 use crate::event::Event;
 use crate::logging::{LogRecord, Logger};
+use crate::outlet::{EventChannels, Outlet};
 use crate::profile::Profile;
 use crate::side::{Side, Target};
 use crate::side_config::SideConfig;
+use crate::traffic::{ProfileTraffic, TrafficRegistry};
 
 const EVENT_CAPACITY: usize = 4096;
 
@@ -21,7 +23,8 @@ struct RunningProfile {
 
 pub struct Rift {
     bridges: Mutex<HashMap<String, RunningProfile>>,
-    events: broadcast::Sender<Event>,
+    events: EventChannels,
+    traffic: TrafficRegistry,
     logger: Logger,
 }
 
@@ -37,10 +40,10 @@ impl Rift {
     }
 
     pub fn with_logger(logger: Logger) -> Self {
-        let (events, _) = broadcast::channel(EVENT_CAPACITY);
         Self {
             bridges: Mutex::new(HashMap::new()),
-            events,
+            events: EventChannels::new(EVENT_CAPACITY),
+            traffic: TrafficRegistry::default(),
             logger,
         }
     }
@@ -56,10 +59,12 @@ impl Rift {
         }
         self.logger
             .log(profile_record("profile.started", "started", &profile));
-        let bridge = Arc::new(Bridge::start_with_events(
-            profile.clone(),
-            self.events.clone(),
-        ));
+        let outlet = Outlet {
+            events: self.events.clone(),
+            traffic: self.traffic.counters(&profile.name),
+            logger: Some(self.logger.clone()),
+        };
+        let bridge = Arc::new(Bridge::start_with_outlet(profile.clone(), outlet));
         bridges.insert(profile.name.clone(), RunningProfile { bridge, profile });
         Ok(())
     }
@@ -137,8 +142,20 @@ impl Rift {
         self.events.subscribe()
     }
 
+    pub fn subscribe_lifecycle(&self) -> broadcast::Receiver<Event> {
+        self.events.subscribe_lifecycle()
+    }
+
+    pub fn traffic(&self) -> BTreeMap<String, ProfileTraffic> {
+        self.traffic.snapshot()
+    }
+
+    pub fn traffic_registry(&self) -> TrafficRegistry {
+        self.traffic.clone()
+    }
+
     pub(crate) fn publish(&self, event: Event) {
-        let _ = self.events.send(event);
+        self.events.publish(event);
     }
 
     pub fn running(&self) -> Vec<String> {
@@ -195,7 +212,42 @@ mod tests {
     use std::fs;
 
     use super::*;
+    use crate::event::WorkflowState;
     use crate::logging::{FileSinkConfig, LoggingConfig};
+
+    #[tokio::test]
+    async fn lifecycle_stream_excludes_data_while_counters_track_it() {
+        let rift = Rift::new();
+        let mut events = rift.subscribe();
+        let mut lifecycle = rift.subscribe_lifecycle();
+        let profile: Profile = toml::from_str(
+            r#"
+name = "gps"
+a = { kind = "tcp-server", bind = "127.0.0.1:0", enabled = false }
+b = { kind = "tcp-server", bind = "127.0.0.1:0", enabled = false }
+"#,
+        )
+        .unwrap();
+        rift.start(profile).unwrap();
+        rift.inject("gps", Target::A, &b"abc"[..]).unwrap();
+        rift.publish(Event::workflow("gps", "poll", WorkflowState::Started));
+        rift.stop_all().await;
+        let all: Vec<Event> = std::iter::from_fn(|| events.try_recv().ok()).collect();
+        let quiet: Vec<Event> = std::iter::from_fn(|| lifecycle.try_recv().ok()).collect();
+        assert!(all.iter().any(|event| matches!(event, Event::Data { .. })));
+        assert!(!quiet
+            .iter()
+            .any(|event| matches!(event, Event::Data { .. })));
+        assert!(quiet
+            .iter()
+            .any(|event| matches!(event, Event::Status { .. })));
+        assert!(quiet
+            .iter()
+            .any(|event| matches!(event, Event::Workflow { .. })));
+        let traffic = rift.traffic()["gps"].a;
+        assert_eq!(traffic.injected_bytes, 3);
+        assert_eq!(traffic.undelivered_chunks, 1);
+    }
 
     #[tokio::test]
     async fn logs_profile_and_side_lifecycle() {

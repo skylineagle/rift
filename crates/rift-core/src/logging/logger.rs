@@ -5,6 +5,7 @@ use std::thread;
 use std::time::Duration;
 
 use super::config::LoggingConfig;
+use super::level::LogLevel;
 use super::record::LogRecord;
 use super::sinks::Sinks;
 
@@ -65,10 +66,14 @@ impl Logger {
 
     pub fn log(&self, record: LogRecord) {
         self.track_running_profiles(&record);
-        let config = self.shared.config.read().unwrap();
-        if config.has_enabled_sink() && record.level >= config.level {
+        if self.enabled(record.level) {
             self.send(Command::Record(Box::new(record)));
         }
+    }
+
+    pub fn enabled(&self, level: LogLevel) -> bool {
+        let config = self.shared.config.read().unwrap();
+        config.has_enabled_sink() && level >= config.level
     }
 
     pub fn flush(&self) {
@@ -124,7 +129,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::logging::{FileSinkConfig, LogLevel};
+    use crate::logging::FileSinkConfig;
 
     fn file_config(directory: &Path) -> LoggingConfig {
         LoggingConfig {

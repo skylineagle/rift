@@ -1,8 +1,8 @@
 use std::ffi::CStr;
 use std::fs::File;
 use std::io;
-use std::os::unix::fs::OpenOptionsExt;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::unix::fs::OpenOptionsExt;
 use std::sync::Arc;
 
 pub struct Pty {

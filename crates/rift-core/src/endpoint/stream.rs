@@ -39,14 +39,17 @@ mod tests {
     use super::*;
     use crate::endpoint::link::WriteRequest;
     use crate::event::{Event, Origin};
+    use crate::outlet::Outlet;
     use crate::peers::PeerCounter;
     use crate::side::Side;
-    use tokio::sync::{broadcast, mpsc};
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
     async fn failed_stream_write_never_emits_forwarded_success() {
-        let (events, mut received) = broadcast::channel(8);
+        let outlet = Arc::new(Outlet::detached(8));
+        let mut received = outlet.events.subscribe();
         let (reads, _reads) = mpsc::channel(8);
         let (states, _states) = mpsc::channel(8);
         let context = Context {
@@ -61,7 +64,7 @@ mod tests {
             .send(WriteRequest::new(
                 bytes.clone(),
                 Event::data("test", Side::A, Side::B, Origin::Forwarded, &bytes, true),
-                events.clone(),
+                outlet.clone(),
             ))
             .await
             .unwrap();

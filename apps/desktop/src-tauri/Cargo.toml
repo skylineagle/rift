@@ -25,5 +25,6 @@ tauri-plugin-process = "2.4.0"
 tauri-plugin-opener = "2.7.3"
 
 [dev-dependencies]
+clap.workspace = true
 tempfile.workspace = true
 toml.workspace = true

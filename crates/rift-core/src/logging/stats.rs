@@ -1,93 +1,46 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::time::Duration;
 
-use serde::Serialize;
-
 use super::record::LogRecord;
-use crate::event::{Event, Origin};
-use crate::side::Side;
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-struct SideCounters {
-    received_bytes: u64,
-    received_chunks: u64,
-    sent_bytes: u64,
-    sent_chunks: u64,
-    injected_bytes: u64,
-    undelivered_chunks: u64,
-}
-
-#[derive(Debug, Clone, Default)]
-struct ProfileCounters {
-    a: SideCounters,
-    b: SideCounters,
-}
-
-impl ProfileCounters {
-    fn side(&mut self, side: Side) -> &mut SideCounters {
-        match side {
-            Side::A => &mut self.a,
-            Side::B => &mut self.b,
-        }
-    }
-}
+use crate::traffic::ProfileTraffic;
 
 #[derive(Default)]
 pub(super) struct Statistics {
-    profiles: HashMap<String, ProfileCounters>,
+    reported: BTreeMap<String, ProfileTraffic>,
 }
 
 impl Statistics {
-    pub fn observe(&mut self, event: &Event) {
-        let Event::Data {
-            profile,
-            source,
-            target,
-            origin,
-            bytes,
-            delivered,
-            ..
-        } = event
-        else {
-            return;
-        };
-        let counters = self.profiles.entry(profile.clone()).or_default();
-        let length = bytes.len() as u64;
-        if *origin == Origin::Received {
-            let side = counters.side(*source);
-            side.received_bytes += length;
-            side.received_chunks += 1;
-            return;
-        }
-        let side = counters.side(*target);
-        if *origin == Origin::Injected {
-            side.injected_bytes += length;
-        }
-        if *delivered {
-            side.sent_bytes += length;
-            side.sent_chunks += 1;
-        } else {
-            side.undelivered_chunks += 1;
-        }
-    }
-
-    pub fn report(&mut self, running: &[String], interval: Duration) -> Vec<LogRecord> {
-        let mut counted = std::mem::take(&mut self.profiles);
-        running
+    pub fn report(
+        &mut self,
+        running: &[String],
+        current: BTreeMap<String, ProfileTraffic>,
+        interval: Duration,
+    ) -> Vec<LogRecord> {
+        let records = running
             .iter()
-            .map(|profile| {
-                let counters = counted.remove(profile).unwrap_or_default();
-                LogRecord::info("stats.profile", format!("{profile} statistics"))
-                    .profile(profile)
-                    .field("interval_secs", interval.as_secs())
-                    .field("a", counters.a)
-                    .field("b", counters.b)
-            })
-            .collect()
+            .map(|profile| self.record(profile, &current, interval))
+            .collect();
+        self.rebase(current);
+        records
     }
 
-    pub fn reset(&mut self) {
-        self.profiles.clear();
+    pub fn rebase(&mut self, current: BTreeMap<String, ProfileTraffic>) {
+        self.reported = current;
+    }
+
+    fn record(
+        &self,
+        profile: &str,
+        current: &BTreeMap<String, ProfileTraffic>,
+        interval: Duration,
+    ) -> LogRecord {
+        let total = current.get(profile).copied().unwrap_or_default();
+        let earlier = self.reported.get(profile).copied().unwrap_or_default();
+        LogRecord::info("stats.profile", format!("{profile} statistics"))
+            .profile(profile)
+            .field("interval_secs", interval.as_secs())
+            .field("a", total.a.since(earlier.a))
+            .field("b", total.b.since(earlier.b))
     }
 }
 
@@ -96,20 +49,25 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-
-    fn data(origin: Origin, delivered: bool) -> Event {
-        Event::data("gps", Side::A, Side::B, origin, b"abc", delivered)
-    }
+    use crate::event::Origin;
+    use crate::side::Side;
+    use crate::traffic::TrafficRegistry;
 
     #[test]
-    fn counts_each_origin_on_the_matching_side_and_resets() {
+    fn reports_counter_deltas_since_the_previous_report() {
+        let registry = TrafficRegistry::default();
+        let counters = registry.counters("gps");
+        counters.side(Side::A).record_received(3);
+        counters
+            .side(Side::B)
+            .record_delivered(Origin::Forwarded, 3);
+        counters.side(Side::B).record_delivered(Origin::Injected, 3);
+        counters
+            .side(Side::B)
+            .record_undelivered(Origin::Injected, 3);
         let mut statistics = Statistics::default();
-        statistics.observe(&data(Origin::Received, true));
-        statistics.observe(&data(Origin::Forwarded, true));
-        statistics.observe(&data(Origin::Injected, true));
-        statistics.observe(&data(Origin::Injected, false));
         let running = ["gps".to_string()];
-        let records = statistics.report(&running, Duration::from_secs(60));
+        let records = statistics.report(&running, registry.snapshot(), Duration::from_secs(60));
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].fields["interval_secs"], 60);
         assert_eq!(
@@ -120,14 +78,22 @@ mod tests {
             records[0].fields["b"],
             json!({"received_bytes": 0, "received_chunks": 0, "sent_bytes": 6, "sent_chunks": 2, "injected_bytes": 6, "undelivered_chunks": 1})
         );
-        let next = statistics.report(&running, Duration::from_secs(60));
-        assert_eq!(next[0].fields["b"]["sent_bytes"], 0);
+        registry
+            .counters("gps")
+            .side(Side::B)
+            .record_delivered(Origin::Forwarded, 5);
+        let next = statistics.report(&running, registry.snapshot(), Duration::from_secs(60));
+        assert_eq!(next[0].fields["a"]["received_bytes"], 0);
+        assert_eq!(next[0].fields["b"]["sent_bytes"], 5);
     }
 
     #[test]
     fn stopped_profiles_are_not_reported() {
+        let registry = TrafficRegistry::default();
+        registry.counters("gps").side(Side::A).record_received(3);
         let mut statistics = Statistics::default();
-        statistics.observe(&data(Origin::Received, true));
-        assert!(statistics.report(&[], Duration::from_secs(1)).is_empty());
+        assert!(statistics
+            .report(&[], registry.snapshot(), Duration::from_secs(1))
+            .is_empty());
     }
 }

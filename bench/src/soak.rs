@@ -1,7 +1,7 @@
 use std::fs::{self, File};
 use std::io::Write;
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -14,7 +14,7 @@ use crate::clock::now_ns;
 use crate::flow::{fill, Flow, FlowResult, SendCounters, SendPlan};
 use crate::kind::Kind;
 use crate::monitor::{sample, summarize, Monitor, Sample, Usage};
-use crate::rift::{side_key, Output, RiftProcess};
+use crate::rift::{side_key, Output, RiftCommand, RiftProcess};
 use crate::sides::{connect_with_retry, prepare, Prepared};
 
 #[derive(clap::Args)]
@@ -92,11 +92,41 @@ struct Final {
 
 fn plans(arguments: &SoakArguments) -> Vec<ProfilePlan> {
     let plans = vec![
-        ProfilePlan { name: "tcp", a: Kind::TcpServer, b: Kind::TcpClient, rate: arguments.tcp_rate, churn: false },
-        ProfilePlan { name: "udp", a: Kind::UdpServer, b: Kind::UdpClient, rate: arguments.udp_rate, churn: false },
-        ProfilePlan { name: "udp-tcp", a: Kind::UdpServer, b: Kind::TcpClient, rate: arguments.udp_rate, churn: false },
-        ProfilePlan { name: "serial", a: Kind::Uart, b: Kind::TcpServer, rate: arguments.serial_rate, churn: false },
-        ProfilePlan { name: "churn", a: Kind::TcpServer, b: Kind::TcpClient, rate: arguments.tcp_rate, churn: true },
+        ProfilePlan {
+            name: "tcp",
+            a: Kind::TcpServer,
+            b: Kind::TcpClient,
+            rate: arguments.tcp_rate,
+            churn: false,
+        },
+        ProfilePlan {
+            name: "udp",
+            a: Kind::UdpServer,
+            b: Kind::UdpClient,
+            rate: arguments.udp_rate,
+            churn: false,
+        },
+        ProfilePlan {
+            name: "udp-tcp",
+            a: Kind::UdpServer,
+            b: Kind::TcpClient,
+            rate: arguments.udp_rate,
+            churn: false,
+        },
+        ProfilePlan {
+            name: "serial",
+            a: Kind::Uart,
+            b: Kind::TcpServer,
+            rate: arguments.serial_rate,
+            churn: false,
+        },
+        ProfilePlan {
+            name: "churn",
+            a: Kind::TcpServer,
+            b: Kind::TcpClient,
+            rate: arguments.tcp_rate,
+            churn: true,
+        },
     ];
     plans
         .into_iter()
@@ -127,7 +157,10 @@ fn is_listener(kind: Kind) -> bool {
     matches!(kind, Kind::TcpServer | Kind::UdpServer)
 }
 
-pub fn run(rift: &Path, arguments: SoakArguments) -> Result<()> {
+pub fn run(rift: &RiftCommand, arguments: SoakArguments) -> Result<()> {
+    if !rift.measurable {
+        bail!("soak samples the rift process, so it needs --rift instead of --rift-command");
+    }
     fs::create_dir_all(&arguments.out)?;
     let mut profiles = Vec::new();
     for plan in plans(&arguments) {
@@ -140,16 +173,25 @@ pub fn run(rift: &Path, arguments: SoakArguments) -> Result<()> {
     fs::write(&config_path, &config)?;
     let process = RiftProcess::spawn(
         rift,
-        &["run".to_string(), "-c".to_string(), config_path.display().to_string(), "--all".to_string()],
+        &[
+            "run".to_string(),
+            "-c".to_string(),
+            config_path.display().to_string(),
+            "--all".to_string(),
+        ],
         Output::Parsed,
     )?;
     let monitor = Monitor::start(process.pid, Duration::from_secs(1));
     let listening = process.wait_for(Duration::from_secs(10), |log| {
         profiles.iter().all(|profile| {
-            [("A", profile.plan.a), ("B", profile.plan.b)].iter().all(|(side, kind)| {
-                !is_listener(*kind)
-                    || log.get(&side_key(profile.plan.name, side)).is_some_and(|entry| entry.listening)
-            })
+            [("A", profile.plan.a), ("B", profile.plan.b)]
+                .iter()
+                .all(|(side, kind)| {
+                    !is_listener(*kind)
+                        || log
+                            .get(&side_key(profile.plan.name, side))
+                            .is_some_and(|entry| entry.listening)
+                })
         })
     });
     if !listening {
@@ -167,22 +209,37 @@ pub fn run(rift: &Path, arguments: SoakArguments) -> Result<()> {
         };
         let name = profile.plan.name;
         if profile.plan.churn {
-            let address = profile.a.connect_address().expect("churn side is a tcp server");
+            let address = profile
+                .a
+                .connect_address()
+                .expect("churn side is a tcp server");
             let b = profile.b.connect(Duration::from_secs(10))?;
             let flow = Flow::receive_only(&format!("{name} a->b"), b.channel.try_clone()?, plan);
             let counters = flow.counters.clone();
             let stop = stop_churn.clone();
             let every = Duration::from_secs_f64(arguments.churn_seconds);
             let bytes = arguments.churn_bytes;
-            churners.push(std::thread::spawn(move || churn(address, plan, &counters, &stop, every, bytes)));
+            churners.push(std::thread::spawn(move || {
+                churn(address, plan, &counters, &stop, every, bytes)
+            }));
             keep_alive.push(b);
             flows.push(flow);
             continue;
         }
         let a = profile.a.connect(Duration::from_secs(10))?;
         let b = profile.b.connect(Duration::from_secs(10))?;
-        flows.push(Flow::start(&format!("{name} a->b"), a.channel.try_clone()?, b.channel.try_clone()?, plan));
-        flows.push(Flow::start(&format!("{name} b->a"), b.channel.try_clone()?, a.channel.try_clone()?, plan));
+        flows.push(Flow::start(
+            &format!("{name} a->b"),
+            a.channel.try_clone()?,
+            b.channel.try_clone()?,
+            plan,
+        ));
+        flows.push(Flow::start(
+            &format!("{name} b->a"),
+            b.channel.try_clone()?,
+            a.channel.try_clone()?,
+            plan,
+        ));
         keep_alive.push(a);
         keep_alive.push(b);
     }
@@ -202,7 +259,14 @@ pub fn run(rift: &Path, arguments: SoakArguments) -> Result<()> {
             break;
         }
         let current = sample(process.pid);
-        let tick = build_tick(&flows, &process, previous.as_ref(), current.as_ref(), began.elapsed(), interval);
+        let tick = build_tick(
+            &flows,
+            &process,
+            previous.as_ref(),
+            current.as_ref(),
+            began.elapsed(),
+            interval,
+        );
         writeln!(output, "{}", serde_json::to_string(&tick)?)?;
         output.flush()?;
         eprintln!("{}", summary_line(&tick));
@@ -231,7 +295,10 @@ pub fn run(rift: &Path, arguments: SoakArguments) -> Result<()> {
         flows: results,
         rift: summarize(&samples, started, finished),
         dropped_chunks: log.values().map(|entry| entry.dropped_chunks).sum(),
-        errors: log.values().flat_map(|entry| entry.errors.clone()).collect(),
+        errors: log
+            .values()
+            .flat_map(|entry| entry.errors.clone())
+            .collect(),
         config,
     };
     writeln!(output, "{}", serde_json::to_string(&final_record)?)?;
@@ -248,7 +315,12 @@ fn control_flow(rate: f64) -> Result<Flow> {
         frame_size: 1024,
         rate_bytes_per_second: Some(rate * 1e6),
     };
-    Ok(Flow::start("control direct", prepare_stream(client)?, prepare_stream(server)?, plan))
+    Ok(Flow::start(
+        "control direct",
+        prepare_stream(client)?,
+        prepare_stream(server)?,
+        plan,
+    ))
 }
 
 fn build_tick(
@@ -290,7 +362,12 @@ fn build_tick(
             threads: now.threads,
             open_files: now.open_files,
         },
-        _ => TickUsage { rss_mb: 0.0, cpu_pct: 0.0, threads: 0, open_files: 0 },
+        _ => TickUsage {
+            rss_mb: 0.0,
+            cpu_pct: 0.0,
+            threads: 0,
+            open_files: 0,
+        },
     };
     let log = process.snapshot();
     Tick {
@@ -308,7 +385,14 @@ fn summary_line(tick: &Tick) -> String {
     let lost: u64 = tick.flows.iter().map(|flow| flow.lost_total).sum();
     format!(
         "t={:.0}s total {:.1}MB/s lost {} rss {:.1}MB cpu {:.0}% threads {} fds {} dropped {}",
-        tick.elapsed_s, total, lost, tick.rift.rss_mb, tick.rift.cpu_pct, tick.rift.threads, tick.rift.open_files, tick.dropped_chunks
+        tick.elapsed_s,
+        total,
+        lost,
+        tick.rift.rss_mb,
+        tick.rift.cpu_pct,
+        tick.rift.threads,
+        tick.rift.open_files,
+        tick.dropped_chunks
     )
 }
 
@@ -325,7 +409,10 @@ fn churn(
     let mut buffer = vec![0u8; frames * size];
     let mut sent = 0u64;
     counters.started_ns.store(now_ns(), Ordering::Relaxed);
-    let progress = Progress { stop, retries: &counters.retries };
+    let progress = Progress {
+        stop,
+        retries: &counters.retries,
+    };
     while !stop.load(Ordering::Relaxed) {
         let round = Instant::now();
         let deadline = Instant::now() + Duration::from_secs(2);

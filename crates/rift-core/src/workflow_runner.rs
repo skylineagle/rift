@@ -258,7 +258,7 @@ async fn wait_for_sides(
     sides: &[Side],
     cancellation: &CancellationToken,
 ) -> bool {
-    let mut events = rift.subscribe();
+    let mut events = rift.subscribe_lifecycle();
     loop {
         match sides_connected(rift, profile, sides) {
             Some(true) => return true,

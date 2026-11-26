@@ -29,8 +29,14 @@ pub struct Prepared {
 enum Pending {
     Connect(SocketAddr),
     Accept(TcpListener),
-    ToServer { socket: UdpSocket, server: SocketAddr },
-    AsRemote { socket: UdpSocket, client: SocketAddr },
+    ToServer {
+        socket: UdpSocket,
+        server: SocketAddr,
+    },
+    AsRemote {
+        socket: UdpSocket,
+        client: SocketAddr,
+    },
     Serial(Pty),
 }
 

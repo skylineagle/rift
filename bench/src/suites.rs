@@ -11,6 +11,7 @@ use crate::case::{run_case, CaseConfig, CaseResult, Direction, LogMode};
 use crate::channel::{prepare_datagram, prepare_stream};
 use crate::flow::{Flow, FlowResult, SendPlan};
 use crate::kind::{pairs, Kind};
+use crate::rift::RiftCommand;
 
 const NETWORK_RATES: &[Option<f64>] = &[
     Some(1.0),
@@ -37,7 +38,13 @@ const SERIAL_RATES: &[Option<f64>] = &[
     None,
 ];
 const FRAME_SIZES: [usize; 6] = [64, 256, 1024, 1400, 4096, 8192];
-const LOG_MODES: [LogMode; 5] = [LogMode::HexQuiet, LogMode::Quiet, LogMode::Json, LogMode::Hex, LogMode::Text];
+const LOG_MODES: [LogMode; 5] = [
+    LogMode::HexQuiet,
+    LogMode::Quiet,
+    LogMode::Json,
+    LogMode::Hex,
+    LogMode::Text,
+];
 
 struct Recorder {
     file: File,
@@ -76,7 +83,7 @@ fn describe(result: &CaseResult) -> String {
         })
         .collect();
     format!(
-        "{}<->{} {:?} rate {:?} frame {} log {:?} | {} | rss {:.1}MB cpu {:.0}%{}",
+        "{}<->{} {:?} rate {:?} frame {} log {:?} | {} | {}{}",
         result.a.label(),
         result.b.label(),
         result.direction,
@@ -84,13 +91,27 @@ fn describe(result: &CaseResult) -> String {
         result.frame_size,
         result.log,
         flows.join(" ; "),
-        result.rift.rss_peak_mb,
-        result.rift.cpu_avg_pct,
-        result.error.as_ref().map(|error| format!(" ERROR {error}")).unwrap_or_default()
+        result.rift.as_ref().map_or_else(
+            || "rss n/a cpu n/a".to_string(),
+            |usage| format!(
+                "rss {:.1}MB cpu {:.0}%",
+                usage.rss_peak_mb, usage.cpu_avg_pct
+            )
+        ),
+        result
+            .error
+            .as_ref()
+            .map(|error| format!(" ERROR {error}"))
+            .unwrap_or_default()
     )
 }
 
-fn run_and_record(rift: &Path, suite: &str, config: CaseConfig, recorder: &mut Recorder) -> Result<()> {
+fn run_and_record(
+    rift: &RiftCommand,
+    suite: &str,
+    config: CaseConfig,
+    recorder: &mut Recorder,
+) -> Result<()> {
     let result = run_case(rift, suite, &config);
     recorder.write(&result, &describe(&result))
 }
@@ -166,7 +187,10 @@ fn frame_cases(duration: Duration) -> Vec<CaseConfig> {
 
 fn log_cases(duration: Duration) -> Vec<CaseConfig> {
     let mut cases = Vec::new();
-    for (a, b) in [(Kind::TcpServer, Kind::TcpClient), (Kind::UdpServer, Kind::UdpClient)] {
+    for (a, b) in [
+        (Kind::TcpServer, Kind::TcpClient),
+        (Kind::UdpServer, Kind::UdpClient),
+    ] {
         for rate in [Some(50.0), None] {
             for log in LOG_MODES {
                 cases.push(CaseConfig {
@@ -193,7 +217,12 @@ struct BaselineResult {
     flow: FlowResult,
 }
 
-fn baseline(transport: &'static str, frame_size: usize, rate: Option<f64>, duration: Duration) -> Result<BaselineResult> {
+fn baseline(
+    transport: &'static str,
+    frame_size: usize,
+    rate: Option<f64>,
+    duration: Duration,
+) -> Result<BaselineResult> {
     let (from, to) = if transport == "tcp" {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let client = TcpStream::connect(listener.local_addr()?)?;
@@ -204,7 +233,10 @@ fn baseline(transport: &'static str, frame_size: usize, rate: Option<f64>, durat
         let sender = UdpSocket::bind("127.0.0.1:0")?;
         let target = receiver.local_addr()?;
         let source = sender.local_addr()?;
-        (prepare_datagram(sender, target)?, prepare_datagram(receiver, source)?)
+        (
+            prepare_datagram(sender, target)?,
+            prepare_datagram(receiver, source)?,
+        )
     };
     let plan = SendPlan {
         frame_size,
@@ -239,7 +271,12 @@ fn run_baselines(directory: &Path, duration: Duration) -> Result<()> {
     Ok(())
 }
 
-fn run_suite(rift: &Path, directory: &Path, suite: &str, cases: Vec<CaseConfig>) -> Result<()> {
+fn run_suite(
+    rift: &RiftCommand,
+    directory: &Path,
+    suite: &str,
+    cases: Vec<CaseConfig>,
+) -> Result<()> {
     let mut recorder = Recorder::create(directory, suite, cases.len())?;
     for config in cases {
         run_and_record(rift, suite, config, &mut recorder)?;
@@ -247,7 +284,13 @@ fn run_suite(rift: &Path, directory: &Path, suite: &str, cases: Vec<CaseConfig>)
     Ok(())
 }
 
-pub fn run_all(rift: &Path, directory: &Path, duration: Duration, only: &[String], serial: bool) -> Result<()> {
+pub fn run_all(
+    rift: &RiftCommand,
+    directory: &Path,
+    duration: Duration,
+    only: &[String],
+    serial: bool,
+) -> Result<()> {
     let wanted = |suite: &str| only.is_empty() || only.iter().any(|name| name == suite);
     if wanted("baseline") {
         run_baselines(directory, duration)?;

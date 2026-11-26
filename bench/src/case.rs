@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -9,7 +8,7 @@ use crate::clock::now_ns;
 use crate::flow::{Flow, FlowResult, SendPlan};
 use crate::kind::Kind;
 use crate::monitor::{summarize, Monitor, Usage};
-use crate::rift::{side_key, Output, RiftProcess};
+use crate::rift::{side_key, Output, RiftCommand, RiftProcess};
 use crate::sides::{prepare, Connected};
 
 const PROFILE: &str = "bench";
@@ -68,13 +67,13 @@ pub struct CaseResult {
     pub log: LogMode,
     pub ready: bool,
     pub flows: Vec<FlowResult>,
-    pub rift: Usage,
+    pub rift: Option<Usage>,
     pub rift_dropped_chunks: u64,
     pub rift_errors: Vec<String>,
     pub error: Option<String>,
 }
 
-pub fn run_case(binary: &Path, suite: &str, config: &CaseConfig) -> CaseResult {
+pub fn run_case(command: &RiftCommand, suite: &str, config: &CaseConfig) -> CaseResult {
     let mut result = CaseResult {
         suite: suite.to_string(),
         a: config.a,
@@ -86,12 +85,12 @@ pub fn run_case(binary: &Path, suite: &str, config: &CaseConfig) -> CaseResult {
         log: config.log,
         ready: false,
         flows: Vec::new(),
-        rift: Usage::default(),
+        rift: None,
         rift_dropped_chunks: 0,
         rift_errors: Vec::new(),
         error: None,
     };
-    if let Err(error) = execute(binary, config, &mut result) {
+    if let Err(error) = execute(command, config, &mut result) {
         result.error = Some(format!("{error:#}"));
     }
     result
@@ -101,7 +100,7 @@ fn is_listener(kind: Kind) -> bool {
     matches!(kind, Kind::TcpServer | Kind::UdpServer)
 }
 
-fn execute(binary: &Path, config: &CaseConfig, result: &mut CaseResult) -> Result<()> {
+fn execute(command: &RiftCommand, config: &CaseConfig, result: &mut CaseResult) -> Result<()> {
     let a = prepare(config.a)?;
     let b = prepare(config.b)?;
     let arguments = vec![
@@ -112,7 +111,7 @@ fn execute(binary: &Path, config: &CaseConfig, result: &mut CaseResult) -> Resul
         PROFILE.to_string(),
     ];
     let output = config.log.output();
-    let rift = RiftProcess::spawn(binary, &arguments, output)?;
+    let rift = RiftProcess::spawn(command, &arguments, output)?;
     let monitor = Monitor::start(rift.pid, Duration::from_millis(100));
     let kinds = [config.a, config.b];
     let parsed = matches!(output, Output::Parsed);
@@ -128,14 +127,22 @@ fn execute(binary: &Path, config: &CaseConfig, result: &mut CaseResult) -> Resul
     } else {
         std::thread::sleep(Duration::from_millis(700));
     }
-    let outcome = connect_and_run(&rift, a.connect(Duration::from_secs(5)), b.connect(Duration::from_secs(5)), config, parsed);
+    let outcome = connect_and_run(
+        &rift,
+        a.connect(Duration::from_secs(5)),
+        b.connect(Duration::from_secs(5)),
+        config,
+        parsed,
+    );
     let log = rift.snapshot();
     rift.stop();
     let samples = monitor.finish();
     let (ready, flows, window) = outcome?;
     result.ready = ready;
     result.flows = flows;
-    result.rift = summarize(&samples, window.0, window.1);
+    result.rift = command
+        .measurable
+        .then(|| summarize(&samples, window.0, window.1));
     for entry in log.values() {
         result.rift_dropped_chunks += entry.dropped_chunks;
         result.rift_errors.extend(entry.errors.iter().cloned());
@@ -172,10 +179,20 @@ fn connect_and_run(
     };
     let mut flows = Vec::new();
     if config.direction != Direction::BToA {
-        flows.push(Flow::start("a->b", a.channel.try_clone()?, b.channel.try_clone()?, plan));
+        flows.push(Flow::start(
+            "a->b",
+            a.channel.try_clone()?,
+            b.channel.try_clone()?,
+            plan,
+        ));
     }
     if config.direction != Direction::AToB {
-        flows.push(Flow::start("b->a", b.channel.try_clone()?, a.channel.try_clone()?, plan));
+        flows.push(Flow::start(
+            "b->a",
+            b.channel.try_clone()?,
+            a.channel.try_clone()?,
+            plan,
+        ));
     }
     let started = now_ns();
     std::thread::sleep(config.duration);
