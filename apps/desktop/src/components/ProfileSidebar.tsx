@@ -20,7 +20,7 @@ export const ProfileSidebar: FC = () => {
     <aside
       ref={attach}
       {...browserHandlers}
-      className="relative flex min-h-0 flex-col border-r border-line bg-surface-2"
+      className="relative flex min-h-0 flex-col bg-surface-2"
     >
       <div className="flex items-center justify-between py-2 pr-2 pl-3 text-fg-3">
         <Hint text="Profiles">

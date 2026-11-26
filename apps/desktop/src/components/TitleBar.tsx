@@ -1,5 +1,6 @@
 import type { FC } from "react";
 
+import { LayoutControls } from "@/components/LayoutControls";
 import { LoggingSettingsButton } from "@/components/LoggingSettingsButton";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { UpdatePill } from "@/components/UpdatePill";
@@ -18,6 +19,7 @@ export const TitleBar: FC = () => (
     </span>
     <span data-tauri-drag-region className="flex-1 self-stretch" />
     <UpdatePill />
+    <LayoutControls />
     <LoggingSettingsButton />
     <ThemeToggle />
   </div>

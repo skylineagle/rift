@@ -20,7 +20,7 @@ export const SeamStream: FC<SeamStreamProps> = ({ profileName }) => {
 
   return (
     <Hint text={tip}>
-      <div className="relative min-h-[60px]">
+      <div className="relative hidden min-h-[60px] @[720px]:block">
         <canvas ref={attach} aria-hidden="true" className="absolute inset-0 block size-full" />
       </div>
     </Hint>
