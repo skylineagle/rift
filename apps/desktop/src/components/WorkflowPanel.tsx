@@ -14,7 +14,7 @@ export const WorkflowPanel: FC<WorkflowPanelProps> = ({ profile }) => {
   return (
     <aside
       aria-label="Workflows"
-      className="flex min-h-0 w-[320px] flex-col border-t border-l border-line bg-surface-2"
+      className="flex min-h-0 min-w-0 flex-col bg-surface-2"
     >
       {editor?.profile === profile.name ? (
         <WorkflowEditor key={editor.id} profile={profile} session={editor} />

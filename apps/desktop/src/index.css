@@ -214,3 +214,13 @@
 
 .side-card { isolation: isolate; }
 .receive-border[data-receiving] { opacity: .32; }
+
+.dockview-theme-rift {
+  --dv-background-color: var(--surface);
+  --dv-group-view-background-color: var(--surface);
+  --dv-separator-border: var(--line);
+  --dv-sash-color: transparent;
+  --dv-active-sash-color: var(--accent);
+  --dv-active-sash-transition-duration: 150ms;
+  --dv-active-sash-transition-delay: 150ms;
+}

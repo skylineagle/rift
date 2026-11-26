@@ -110,7 +110,7 @@ export const InjectBar: FC<InjectBarProps> = ({ profileName }) => {
   };
 
   return (
-    <div className="flex items-center gap-1.5 border-t border-line bg-surface-2 px-3 py-2">
+    <div className="flex min-w-0 items-center gap-1.5 bg-surface-2 px-3 py-2">
       <SegmentedControl
         ariaLabel="Inject target"
         items={TARGET_ITEMS}

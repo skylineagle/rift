@@ -2,7 +2,7 @@ import { Toaster } from "@yusufceng1z/ding-react";
 import type { FC } from "react";
 
 import { EmptyProfiles } from "@/components/EmptyProfiles";
-import { MainPanel } from "@/components/MainPanel";
+import { DockWorkspace } from "@/components/DockWorkspace";
 import { ProfileSidebar } from "@/components/ProfileSidebar";
 import { TitleBar } from "@/components/TitleBar";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -17,14 +17,16 @@ export const App: FC = () => {
     <TooltipProvider>
       <div className="flex h-full flex-col bg-surface">
         <TitleBar />
-        <div className="grid min-h-0 flex-1 grid-cols-[212px_minmax(0,1fr)]">
-          <ProfileSidebar />
-          {profile ? (
-            <MainPanel key={profile.name} profile={profile} />
-          ) : (
+        {profile ? (
+          <DockWorkspace />
+        ) : (
+          <div className="grid min-h-0 flex-1 grid-cols-[212px_minmax(0,1fr)]">
+            <div className="grid min-h-0 border-r border-line">
+              <ProfileSidebar />
+            </div>
             <EmptyProfiles />
-          )}
-        </div>
+          </div>
+        )}
       </div>
       <Toaster position="top-center" theme={theme} />
     </TooltipProvider>
